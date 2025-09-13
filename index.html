@@ -18,13 +18,12 @@
     #btns{display:flex;gap:8px}
     input[type=file]{display:none}
     .spacer{flex:1 1 0}
-    /* Audio controls */
     #audioControls{display:flex;gap:6px;align-items:center}
     #volumeSlider{width:80px}
   </style>
 </head>
 <body>
-  <!-- TOP TOOLBAR (buttons first, per your request) -->
+  <!-- TOP TOOLBAR -->
   <div id="ui">
     <div id="btns">
       <button id="buildRifleman">Build Rifleman (50)</button>
@@ -73,25 +72,21 @@
   // --- Audio ---
   const bgm = new Audio('assets/skirmish1.mp3');
   bgm.loop = true;
-  bgm.volume = parseFloat(volumeSlider.value); // low background volume
+  bgm.volume = parseFloat(volumeSlider.value);
 
-  const deathSoundBase = new Audio('assets/death.mp3'); // use cry.mp3 if you prefer
+  const deathSoundBase = new Audio('assets/death.mp3'); // swap to cry.mp3 if you prefer
   deathSoundBase.volume = 0.6;
 
-  // Start BGM (autoplay may be blocked)
   bgm.play().catch(() => {
     const start = () => { bgm.play().catch(()=>{}); document.removeEventListener('pointerdown', start); };
     document.addEventListener('pointerdown', start, { once: true });
   });
 
-  // Audio controls
   muteBtn.onclick = () => {
     bgm.muted = !bgm.muted;
     muteBtn.textContent = bgm.muted ? "🔇" : "🔊";
   };
-  volumeSlider.oninput = (e) => {
-    bgm.volume = parseFloat(e.target.value);
-  };
+  volumeSlider.oninput = (e) => { bgm.volume = parseFloat(e.target.value); };
 
   // --- Custom cursors (SVG data URIs) ---
   const greenTarget = makeCursor('#27e36a');
@@ -113,7 +108,6 @@
   // -------- World --------
   const F={PLAYER:1,ENEMY:2};
   const BUILDING_TYPES = {BARRACKS:'barracks'};
-  const ASSIST_RADIUS = 150;
   const VISION=80;
   let world;
 
@@ -217,8 +211,8 @@
         world.selection.forEach(u=>u.selected=false); world.selection.clear();
         friendly.selected=true; world.selection.add(friendly);
       }
-      else if(hasSel){ // ground move
-        world.selection.forEach(u=>u.target={x:p.x,y:p.y,dummy:true});
+      else if(hasSel){ // ground move -> FORMATION assignment
+        assignFormationMove([...world.selection], p.x, p.y);
         addClickFx(p.x,p.y,'#27e36a'); // green click effect
       }
     }
@@ -292,6 +286,64 @@
     }
   }
 
+  // -------- Formation assignment --------
+  function assignFormationMove(units, tx, ty){
+    if(units.length===0) return;
+
+    // Compute group facing: centroid -> target
+    let cx=0, cy=0;
+    for(const u of units){ cx+=u.x; cy+=u.y; }
+    cx/=units.length; cy/=units.length;
+    const face = Math.atan2(ty - cy, tx - cx);
+
+    // Grid layout (rough square) centered on (0,0)
+    const n = units.length;
+    const spacing = 24; // distance between slots
+    const cols = Math.ceil(Math.sqrt(n));
+    const rows = Math.ceil(n / cols);
+
+    const offsets=[];
+    let i=0;
+    for(let r=0;r<rows;r++){
+      for(let c=0;c<cols;c++){
+        if(i++>=n) break;
+        const ox = (c - (cols-1)/2)*spacing;
+        const oy = (r - (rows-1)/2)*spacing;
+        // rotate by group facing so the block "points" toward target
+        const rx =  ox*Math.cos(face) - oy*Math.sin(face);
+        const ry =  ox*Math.sin(face) + oy*Math.cos(face);
+        offsets.push({x:rx,y:ry});
+      }
+    }
+
+    // Assign each its own dummy target (prevents stacking)
+    i=0;
+    for(const u of units){
+      const off = offsets[i++] || {x:0,y:0};
+      u.target = { x: tx + off.x, y: ty + off.y, dummy:true, formation:true };
+    }
+  }
+
+  // -------- Separation steering (anti-clump) --------
+  const SEP_RADIUS = 18;      // start pushing away inside this
+  const SEP_FORCE  = 65;      // strength of separation (px/s push)
+  function separation(u){
+    let fx=0, fy=0, count=0;
+    for(const v of world.units){
+      if(v===u || v.f!==u.f || v.hp<=0) continue;
+      const dx=u.x - v.x, dy=u.y - v.y;
+      const d=Math.hypot(dx,dy);
+      if(d>0 && d<SEP_RADIUS){
+        const m=(SEP_RADIUS - d)/SEP_RADIUS; // 0..1
+        fx += (dx/d) * m;
+        fy += (dy/d) * m;
+        count++;
+      }
+    }
+    if(count>0){ fx/=count; fy/=count; }
+    return {fx,fy};
+  }
+
   // -------- Game Step --------
   function step(dt){
     world.time += dt; world.tAccum += dt;
@@ -325,15 +377,28 @@
     for(const u of world.units){
       if(u.hp<=0) continue;
       let t=u.target; if(t && t.hp!==undefined && t.hp<=0) t=u.target=null;
+
       if(t){
         const tx=t.x, ty=t.y, dist=Math.hypot(tx-u.x,ty-u.y);
         const inRange=dist<=u.range, canShoot=inRange && !blocked(u.x,u.y,tx,ty);
-        if(t.dummy){ moveToward(u,tx,ty,dt); if(dist<6) u.target=null; }
-        else if(canShoot){ if(u.cd<=0){ fire(u,t); u.cd=0.5+Math.random()*0.2; } }
-        else { moveToward(u,tx,ty,dt); }
+
+        if(t.dummy){ // formation waypoint
+          // Add separation steering while moving toward slot
+          moveToward(u,tx,ty,dt,true);
+          if(dist<6) u.target=null;
+        } else if(canShoot){
+          if(u.cd<=0){ fire(u,t); u.cd=0.5+Math.random()*0.2; }
+        } else {
+          moveToward(u,tx,ty,dt,true);
+        }
       } else {
-        u.vx*=0.9; u.vy*=0.9; u.x+=u.vx*60*dt; u.y+=u.vy*60*dt;
+        // idle drift damping + separation keeps them spaced
+        const sep = separation(u);
+        u.vx = (u.vx + (sep.fx*SEP_FORCE/60))*0.9;
+        u.vy = (u.vy + (sep.fy*SEP_FORCE/60))*0.9;
+        u.x+=u.vx*60*dt; u.y+=u.vy*60*dt;
       }
+
       // tree push-out
       for(const tr of world.trees){
         const dx=u.x-tr.x, dy=u.y-tr.y, d=Math.hypot(dx,dy);
@@ -406,12 +471,26 @@
     if(!pAlive||!eAlive) endGame(pAlive && !eAlive);
   }
 
-  function moveToward(u,tx,ty,dt){
+  function moveToward(u,tx,ty,dt,applySep=false){
     const ang=Math.atan2(ty-u.y,tx-u.x), sp=u.s;
     let vx=Math.cos(ang)*sp, vy=Math.sin(ang)*sp;
+
+    // Apply separation steering (scaled) to base direction
+    if(applySep){
+      const sep = separation(u);
+      vx += (sep.fx*SEP_FORCE)/100;
+      vy += (sep.fy*SEP_FORCE)/100;
+      // limit speed so separation doesn't rocket them
+      const spd=Math.hypot(vx,vy);
+      const max=sp*1.25;
+      if(spd>max){ vx=vx*(max/spd); vy=vy*(max/spd); }
+    }
+
+    // sidestep around immediate tree collision
     let blockedMove=false;
     for(const tr of world.trees){ const dx=(u.x+vx*60*dt)-tr.x, dy=(u.y+vy*60*dt)-tr.y; if(Math.hypot(dx,dy)<tr.r+u.r){ blockedMove=true; break; } }
     if(blockedMove){ const side=Math.random()<.5?Math.PI/2:-Math.PI/2; vx=Math.cos(ang+side)*sp*.85; vy=Math.sin(ang+side)*sp*.85; }
+
     u.vx=vx; u.vy=vy; u.x+=vx*60*dt; u.y+=vy*60*dt;
   }
 

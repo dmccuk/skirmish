@@ -7,12 +7,12 @@
   <style>
     html,body{height:100%;margin:0;background:#0b0e16;color:#e6e8ef;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
     #ui{position:fixed;left:0;right:0;top:0;padding:8px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
-        background:linear-gradient(180deg,rgba(11,14,22,.9),rgba(11,14,22,0));font-size:14px;z-index:3}
+        background:linear-gradient(180deg,rgba(11,14,22,.9),rgba(11,14,22,0));font-size:14px;z-index:4}
     .pill{background:#121827;border:1px solid #1e2639;padding:6px 10px;border-radius:999px}
     #wrap{height:100%;display:grid;place-items:center}
-    canvas{touch-action:none;border:1px solid #1e2639;border-radius:12px;background:#0f1424;
+    canvas#c{touch-action:none;border:1px solid #1e2639;border-radius:12px;background:#0f1424;
            box-shadow:0 10px 30px rgba(0,0,0,.35)}
-    #overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(5,8,16,.65);z-index:4}
+    #overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(5,8,16,.65);z-index:5}
     #panel{background:#0f1424;border:1px solid #1e2639;padding:24px;border-radius:16px;text-align:center;max-width:520px}
     button{background:#1b2a4a;border:1px solid #2a3b65;color:#e6e8ef;padding:10px 14px;border-radius:10px;cursor:pointer}
     #btns{display:flex;gap:8px}
@@ -23,31 +23,29 @@
 
     /* Selection HUD */
     #selHUD{
-      position:fixed;left:12px;top:64px;z-index:2;
+      position:fixed;left:12px;top:64px;z-index:3;
       background:#0f1424;border:1px solid #1e2639;border-radius:12px;
       padding:10px; min-width:180px; max-width:260px;
       box-shadow:0 8px 22px rgba(0,0,0,.35)
     }
     #selHUD h4{margin:0 0 8px 0;font-size:12px;color:#aab4d0;display:flex;justify-content:space-between;gap:8px}
-    #selHUD .grid{
-      display:grid;grid-template-columns:repeat(6,1fr);gap:6px;
-    }
-    .tile{
-      position:relative;height:24px;border-radius:6px;border:1px solid #243151;
-      background:#18223a; display:flex;align-items:center;justify-content:center;
-      font-size:11px; color:#dce6ff;
-    }
+    #selHUD .grid{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+    .tile{position:relative;height:24px;border-radius:6px;border:1px solid #243151;background:#18223a;display:flex;align-items:center;justify-content:center;font-size:11px;color:#dce6ff}
     .tile.rifle{background:#294160;border-color:#345180}
     .tile.gren{background:#6b3d1f;border-color:#8a5a2e}
-    .hpbar{
-      position:absolute;left:2px;right:2px;bottom:2px;height:3px;background:#0b1120;border-radius:3px;
-      overflow:hidden;
-    }
+    .hpbar{position:absolute;left:2px;right:2px;bottom:2px;height:3px;background:#0b1120;border-radius:3px;overflow:hidden}
     .hpbar>span{display:block;height:100%;background:#36d399}
-    #orderFlash{
-      margin-top:6px;font-size:11px;color:#cfe8ff;opacity:0;transition:opacity .25s ease;
-    }
+    #orderFlash{margin-top:6px;font-size:11px;color:#cfe8ff;opacity:0;transition:opacity .25s ease}
     #orderFlash.show{opacity:1}
+
+    /* Minimap */
+    #minimapWrap{
+      position:fixed;right:12px;top:64px;z-index:3;
+      background:#0f1424;border:1px solid #1e2639;border-radius:12px;
+      padding:8px;box-shadow:0 8px 22px rgba(0,0,0,.35)
+    }
+    #minimap{display:block;border-radius:8px;border:1px solid #1e2639;background:#192233}
+    #miniLabel{font-size:12px;color:#aab4d0;margin-bottom:6px}
   </style>
 </head>
 <body>
@@ -66,8 +64,8 @@
       <button id="muteBtn">🔊</button>
       <input id="volumeSlider" type="range" min="0" max="1" step="0.05" value="0.25" />
     </div>
-    <div class="pill"><b>Army Skirmish</b> — tap ground to move (green), tap enemy to attack (red)</div>
-    <div class="pill">Drag to box-select • Fog of war • Trees block LoS (rifle) • Grenadiers lob over cover</div>
+    <div class="pill"><b>Army Skirmish</b> — click ground to move (green), enemy to attack (red)</div>
+    <div class="pill">Large map • Minimap click-to-pan • True Fog of War</div>
   </div>
 
   <!-- Selection HUD -->
@@ -75,6 +73,12 @@
     <h4><span>Selected</span><span id="selCount">0</span></h4>
     <div class="grid" id="selGrid"></div>
     <div id="orderFlash">Order: Move</div>
+  </div>
+
+  <!-- Minimap -->
+  <div id="minimapWrap">
+    <div id="miniLabel">Minimap</div>
+    <canvas id="minimap" width="200" height="125"></canvas>
   </div>
 
   <div id="wrap"><canvas id="c" width="960" height="600"></canvas></div>
@@ -89,8 +93,22 @@
 
 <script>
 (() => {
-  const W=960,H=600;
+  // -------- Viewport & World sizes --------
+  const VIEW_W=960, VIEW_H=600; // canvas size
+  const MAP_W=2400, MAP_H=1600; // LARGE map
   const ctx=document.getElementById('c').getContext('2d');
+  ctx.canvas.width = VIEW_W; ctx.canvas.height = VIEW_H;
+
+  // Camera (top-left of viewport in world coords)
+  const cam = { x: 0, y: 0 };
+
+  // Minimap
+  const mini = document.getElementById('minimap');
+  const mctx = mini.getContext('2d');
+  const MINI_W = mini.width, MINI_H = mini.height;
+  const mScaleX = MINI_W / MAP_W, mScaleY = MINI_H / MAP_H;
+
+  // UI elems
   const overlay=document.getElementById('overlay');
   const resultEl=document.getElementById('result');
   const statsEl=document.getElementById('stats');
@@ -102,31 +120,21 @@
   const terrainFile=document.getElementById('terrainFile');
   const muteBtn=document.getElementById('muteBtn');
   const volumeSlider=document.getElementById('volumeSlider');
-  const canvas=ctx.canvas;
 
-  // Selection HUD elements
+  // Selection HUD
   const selCountEl = document.getElementById('selCount');
   const selGridEl  = document.getElementById('selGrid');
   const orderFlash = document.getElementById('orderFlash');
   let orderFlashTimer=null;
 
   // --- Audio ---
-  const bgm = new Audio('assets/skirmish1.mp3');
-  bgm.loop = true;
-  bgm.volume = parseFloat(volumeSlider.value);
-
-  const deathSoundBase = new Audio('assets/death.mp3'); // or cry.mp3
-  deathSoundBase.volume = 0.6;
-
+  const bgm = new Audio('assets/skirmish1.mp3'); bgm.loop = true; bgm.volume = parseFloat(volumeSlider.value);
+  const deathSoundBase = new Audio('assets/death.mp3'); deathSoundBase.volume = 0.6;
   bgm.play().catch(() => {
     const start = () => { bgm.play().catch(()=>{}); document.removeEventListener('pointerdown', start); };
     document.addEventListener('pointerdown', start, { once: true });
   });
-
-  muteBtn.onclick = () => {
-    bgm.muted = !bgm.muted;
-    muteBtn.textContent = bgm.muted ? "🔇" : "🔊";
-  };
+  muteBtn.onclick = () => { bgm.muted = !bgm.muted; muteBtn.textContent = bgm.muted ? "🔇" : "🔊"; };
   volumeSlider.oninput = (e) => { bgm.volume = parseFloat(e.target.value); };
 
   // --- Custom cursors (SVG data URIs) ---
@@ -134,55 +142,77 @@
   const redTarget   = makeCursor('#ff4d5a');
   const defaultCursor = 'crosshair';
   function makeCursor(color){
-    const svg = encodeURIComponent(`
-      <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">
-        <circle cx="16" cy="16" r="10" fill="none" stroke="${color}" stroke-width="2"/>
-        <line x1="16" y1="1" x2="16" y2="7" stroke="${color}" stroke-width="2"/>
-        <line x1="16" y1="25" x2="16" y2="31" stroke="${color}" stroke-width="2"/>
-        <line x1="1" y1="16" x2="7" y2="16" stroke="${color}" stroke-width="2"/>
-        <line x1="25" y1="16" x2="31" y2="16" stroke="${color}" stroke-width="2"/>
-        <circle cx="16" cy="16" r="2" fill="${color}"/>
-      </svg>`);
+    const svg = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">
+      <circle cx="16" cy="16" r="10" fill="none" stroke="${color}" stroke-width="2"/>
+      <line x1="16" y1="1" x2="16" y2="7" stroke="${color}" stroke-width="2"/>
+      <line x1="16" y1="25" x2="16" y2="31" stroke="${color}" stroke-width="2"/>
+      <line x1="1" y1="16" x2="7" y2="16" stroke="${color}" stroke-width="2"/>
+      <line x1="25" y1="16" x2="31" y2="16" stroke="${color}" stroke-width="2"/>
+      <circle cx="16" cy="16" r="2" fill="${color}"/>
+    </svg>`);
     return `url("data:image/svg+xml,${svg}") 16 16, crosshair`;
   }
 
   // -------- World --------
   const F={PLAYER:1,ENEMY:2};
   const BUILDING_TYPES = {BARRACKS:'barracks'};
-  const VISION=80;
+  const VISION_RADIUS=100; // renamed to avoid collisions
+  const SEP_RADIUS = 18, SEP_FORCE = 65;
+
   let world;
 
+  // Offscreen fog canvas (full map)
+  const fogCanvas = document.createElement('canvas');
+  fogCanvas.width = MAP_W; fogCanvas.height = MAP_H;
+  const fogCtx = fogCanvas.getContext('2d');
+
+  // Default ground tiling
+  let groundPattern=null; const groundImg = new Image();
+  groundImg.onload = ()=>{ groundPattern = ctx.createPattern(groundImg,'repeat'); };
+  groundImg.src = 'assets/grass_tile.jpg'; // optional; if missing, will fallback to solid
+
   function reset(){
+    // init fog (completely black)
+    fogCtx.globalCompositeOperation = 'source-over';
+    fogCtx.fillStyle = 'rgba(0,0,0,1)';
+    fogCtx.fillRect(0,0,MAP_W,MAP_H);
+
     world={
-      tAccum:0, time:0,
+      tAccum:0, time:0, score:0,
       units:[], bullets:[], trees:[], buildings:[],
       selection:new Set(), selBox:null,
       ended:false, stats:{lost:0,kills:0,timeStart:performance.now()},
-      fogRevealed:new Set(), resources:{credits:500},
+      resources:{credits:500},
       terrainImg:null, clickFx:[],
-      grass: Array.from({length:140},()=>({x:Math.random()*W,y:Math.random()*H,r:30+Math.random()*70,a:0.06+Math.random()*0.09})),
-      terrain: Array.from({length:22},()=>({x:Math.random()*W,y:Math.random()*H,r:20+Math.random()*40,color:Math.random()<.5?'#4a3d2a':'#6b6b6b'})),
+      grass: Array.from({length:180},()=>({x:Math.random()*MAP_W,y:Math.random()*MAP_H,r:30+Math.random()*70,a:0.06+Math.random()*0.09})),
+      terrain: Array.from({length:50},()=>({x:Math.random()*MAP_W,y:Math.random()*MAP_H,r:20+Math.random()*40,color:Math.random()<.5?'#4a3d2a':'#6b6b6b'})),
     };
 
-    // Forests
-    forest(260,220,16,90); forest(520,420,20,100); forest(740,180,18,85);
+    // Forests spread across the map
+    forest(260,220,20,120); forest(520,820,26,140); forest(1200,380,24,120);
+    forest(1700,640,28,160); forest(2000,1200,30,170); forest(1400,1100,22,130);
 
     // Player barracks (build queue)
     world.buildings.push({
-      type:BUILDING_TYPES.BARRACKS, f:F.PLAYER, x:80, y:470, w:70, h:46,
-      hp:260, max:260,
-      queue:[], current:null, timeLeft:0
+      type:BUILDING_TYPES.BARRACKS, f:F.PLAYER, x:120, y:MAP_H-130, w:70, h:46,
+      hp:260, max:260, queue:[], current:null, timeLeft:0
     });
 
-    // Player squad (6 rifle + 2 grenadiers)
-    for(let i=0;i<6;i++){ const u=spawn(160+(i%3)*22,500+Math.floor(i/3)*26,F.PLAYER,'rifleman'); u.selected=true; world.selection.add(u); }
-    for(let i=0;i<2;i++){ const u=spawn(240+(i*22),500,F.PLAYER,'grenadier'); u.selected=true; world.selection.add(u); }
+    // Player squad near base
+    for(let i=0;i<6;i++){ const u=spawn(200+(i%3)*22,MAP_H-120+Math.floor(i/3)*26,F.PLAYER,'rifleman'); u.selected=true; world.selection.add(u); }
+    for(let i=0;i<2;i++){ const u=spawn(280+(i*22),MAP_H-120,F.PLAYER,'grenadier'); u.selected=true; world.selection.add(u); }
     updateSelectionHUD();
 
-    // Enemies
-    for(let i=0;i<6;i++) spawn(760+(i%3)*24,160+Math.floor(i/3)*24,F.ENEMY,'rifleman');
-    for(let i=0;i<2;i++) spawn(760+(i*24),220,F.ENEMY,'grenadier');
-    for(let i=0;i<4;i++) spawn(820+(i%2)*24,320+Math.floor(i/2)*24,F.ENEMY,'rifleman');
+    // Enemies elsewhere
+    for(let i=0;i<8;i++) spawn(1800+(i%4)*26,320+Math.floor(i/4)*26,F.ENEMY,'rifleman');
+    for(let i=0;i<3;i++) spawn(1950+(i*26),420,F.ENEMY,'grenadier');
+    for(let i=0;i<6;i++) spawn(2100+(i%3)*26,900+Math.floor(i/3)*26,F.ENEMY,'rifleman');
+
+    // Start camera near player base (center on it)
+    centerCamera(260, MAP_H-120);
+
+    // Reveal initial area around starting units
+    for(const u of world.units){ if(u.f===F.PLAYER) revealAround(u.x,u.y); }
   }
 
   function forest(cx,cy,count,spread){
@@ -209,18 +239,29 @@
     world.units.push(u); return u;
   }
 
-  // -------- Input (pointer) + cursor logic --------
+  // --- Camera helpers ---
+  function centerCamera(cx,cy){
+    cam.x = Math.max(0, Math.min(cx - VIEW_W/2, MAP_W - VIEW_W));
+    cam.y = Math.max(0, Math.min(cy - VIEW_H/2, MAP_H - VIEW_H));
+  }
+  function worldToScreen(x,y){ return { x: x - cam.x, y: y - cam.y }; }
+  function screenToWorld(x,y){ return { x: x + cam.x, y: y + cam.y }; }
+
+  // --- Input (pointer) + cursor logic ---
   let pointer={x:0,y:0,down:false,dragStart:null,dragging:false, overEnemy:false};
   const DRAG_THRESH=8;
 
+  const canvas=ctx.canvas;
   canvas.addEventListener('pointerdown',e=>{
     canvas.setPointerCapture(e.pointerId);
-    const p=pos(e); pointer.x=p.x; pointer.y=p.y; pointer.down=true; pointer.dragStart={x:p.x,y:p.y}; pointer.dragging=false;
+    const p=screenToWorld(...Object.values(pos(e)));
+    pointer.x=p.x; pointer.y=p.y; pointer.down=true; pointer.dragStart={x:p.x,y:p.y}; pointer.dragging=false;
     world.selBox={x:p.x,y:p.y,w:0,h:0};
   });
 
   canvas.addEventListener('pointermove',e=>{
-    const p=pos(e); pointer.x=p.x; pointer.y=p.y;
+    const s=pos(e); const p=screenToWorld(s.x,s.y);
+    pointer.x=p.x; pointer.y=p.y;
     const hasSelection = world.selection.size>0;
     pointer.overEnemy = !!unitAt(p.x,p.y,F.ENEMY);
     if (hasSelection && pointer.overEnemy) canvas.style.cursor = redTarget;
@@ -238,7 +279,7 @@
   });
 
   canvas.addEventListener('pointerup',e=>{
-    const p=pos(e); pointer.down=false;
+    const p=screenToWorld(...Object.values(pos(e))); pointer.down=false;
     const hasSel = world.selection.size>0;
     if(pointer.dragging && world.selBox){
       world.selection.forEach(u=>u.selected=false); world.selection.clear();
@@ -250,34 +291,43 @@
       if(enemy && hasSel){
         world.selection.forEach(u=>u.target=enemy);
         flashOrder('Attack');
-        addClickFx(p.x,p.y,'#ff4d5a'); // red click effect
+        addClickFx(p.x,p.y,'#ff4d5a');
       }
       else if(friendly){
         world.selection.forEach(u=>u.selected=false); world.selection.clear();
         friendly.selected=true; world.selection.add(friendly);
         updateSelectionHUD();
       }
-      else if(hasSel){ // ground move -> FORMATION assignment
+      else if(hasSel){ // ground move -> formation
         assignFormationMove([...world.selection], p.x, p.y);
         flashOrder('Move');
-        addClickFx(p.x,p.y,'#27e36a'); // green click effect
+        addClickFx(p.x,p.y,'#27e36a');
       }
     }
     world.selBox=null; pointer.dragStart=null; pointer.dragging=false;
   });
 
+  // Prevent context menu
   canvas.addEventListener('contextmenu', e=>e.preventDefault(), {passive:false});
   function addClickFx(x,y,color){ world.clickFx.push({x,y,color,age:0,life:0.5}); }
   function pos(e){ const r=canvas.getBoundingClientRect(); return {x:(e.clientX-r.left), y:(e.clientY-r.top)}; }
 
-  // -------- Buttons / Build Queue --------
+  // --- Minimap interaction ---
+  mini.addEventListener('pointerdown', (e)=>{
+    const r=mini.getBoundingClientRect();
+    const mx = (e.clientX - r.left), my = (e.clientY - r.top);
+    const wx = Math.max(0, Math.min(mx / mScaleX, MAP_W));
+    const wy = Math.max(0, Math.min(my / mScaleY, MAP_H));
+    centerCamera(wx, wy);
+  });
+
+  // --- Buttons / Build Queue ---
   btnSelectAll.onclick=()=>{
     world.selection.forEach(u=>u.selected=false); world.selection.clear();
     world.units.forEach(u=>{ if(u.f===F.PLAYER){ u.selected=true; world.selection.add(u);} });
     updateSelectionHUD();
   };
   btnRestart.onclick=()=>location.reload();
-
   btnBuildRifleman.onclick=()=>queueBuild('rifleman',50,3);
   btnBuildGrenadier.onclick=()=>queueBuild('grenadier',100,4);
 
@@ -297,12 +347,13 @@
     return world.buildings.find(b => b.f===faction && b.type===BUILDING_TYPES.BARRACKS);
   }
 
-  // -------- Helpers --------
+  // --- Helpers ---
   const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
   function unitAt(x,y,filt){ for(const u of world.units){ if(filt && u.f!==filt) continue; if(Math.hypot(x-u.x,y-u.y)<=u.r+3) return u; } return null; }
   function circleInRect(cx,cy,r,rect){ const rx=clamp(cx,rect.x,rect.x+rect.w), ry=clamp(cy,rect.y,rect.y+rect.h);
     return (cx-r<=rect.x+rect.w && cx+r>=rect.x && cy-r<=rect.y+rect.h && cy+r>=rect.y && ((cx-rx)**2+(cy-ry)**2)<=r*r); }
   function blocked(ax,ay,bx,by){
+    // line-of-sight blocked by trees (for rifles only)
     for(const t of world.trees){
       const dx=bx-ax, dy=by-ay, L2=dx*dx+dy*dy||1, u=clamp(((t.x-ax)*dx+(t.y-ay)*dy)/L2,0,1);
       const px=ax+u*dx, py=ay+u*dy, d2=(px-t.x)**2+(py-t.y)**2;
@@ -310,18 +361,19 @@
     } return false;
   }
 
-  // Fog of War
-  const VISION=80;
+  // --- Fog of War (permanent reveal) ---
   function revealAround(x,y){
-    for(let dx=-VISION; dx<=VISION; dx+=4){
-      for(let dy=-VISION; dy<=VISION; dy+=4){
-        if(dx*dx+dy*dy<=VISION*VISION){ world.fogRevealed.add(((x+dx)|0)+','+((y+dy)|0)); }
-      }
-    }
+    fogCtx.save();
+    fogCtx.globalCompositeOperation = 'destination-out';
+    const g = fogCtx.createRadialGradient(x,y,0,x,y,VISION_RADIUS);
+    g.addColorStop(0,'rgba(0,0,0,0.9)');
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    fogCtx.fillStyle = g;
+    fogCtx.beginPath(); fogCtx.arc(x,y,VISION_RADIUS,0,Math.PI*2); fogCtx.fill();
+    fogCtx.restore();
   }
-  function revealed(x,y){ return world.fogRevealed.has((x|0)+','+(y|0)); }
 
-  // ---------- Reactive fire ----------
+  // --- Reactive fire (nearby allies assist) ---
   function reactToAttack(victim, attacker){
     if(!attacker || victim.hp<=0) return;
     victim.target = attacker;
@@ -335,44 +387,27 @@
     }
   }
 
-  // -------- Formation assignment --------
+  // --- Formation assignment ---
   function assignFormationMove(units, tx, ty){
     if(units.length===0) return;
-
-    // group facing: centroid -> target
-    let cx=0, cy=0;
-    for(const u of units){ cx+=u.x; cy+=u.y; }
-    cx/=units.length; cy/=units.length;
+    let cx=0, cy=0; for(const u of units){ cx+=u.x; cy+=u.y; } cx/=units.length; cy/=units.length;
     const face = Math.atan2(ty - cy, tx - cx);
-
-    const n = units.length;
-    const spacing = 24;
-    const cols = Math.ceil(Math.sqrt(n));
-    const rows = Math.ceil(n / cols);
-
-    const offsets=[];
-    let i=0;
+    const n = units.length, spacing = 24;
+    const cols = Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols);
+    const offsets=[]; let i=0;
     for(let r=0;r<rows;r++){
       for(let c=0;c<cols;c++){
         if(i++>=n) break;
-        const ox = (c - (cols-1)/2)*spacing;
-        const oy = (r - (rows-1)/2)*spacing;
+        const ox = (c - (cols-1)/2)*spacing, oy = (r - (rows-1)/2)*spacing;
         const rx =  ox*Math.cos(face) - oy*Math.sin(face);
         const ry =  ox*Math.sin(face) + oy*Math.cos(face);
         offsets.push({x:rx,y:ry});
       }
     }
-
-    i=0;
-    for(const u of units){
-      const off = offsets[i++] || {x:0,y:0};
-      u.target = { x: tx + off.x, y: ty + off.y, dummy:true, formation:true };
-    }
+    i=0; for(const u of units){ const off = offsets[i++] || {x:0,y:0}; u.target = { x: tx + off.x, y: ty + off.y, dummy:true, formation:true }; }
   }
 
-  // -------- Separation steering --------
-  const SEP_RADIUS = 18;
-  const SEP_FORCE  = 65;
+  // --- Separation steering ---
   function separation(u){
     let fx=0, fy=0, count=0;
     for(const v of world.units){
@@ -381,23 +416,20 @@
       const d=Math.hypot(dx,dy);
       if(d>0 && d<SEP_RADIUS){
         const m=(SEP_RADIUS - d)/SEP_RADIUS;
-        fx += (dx/d) * m;
-        fy += (dy/d) * m;
-        count++;
+        fx += (dx/d) * m; fy += (dy/d) * m; count++;
       }
     }
     if(count>0){ fx/=count; fy/=count; }
     return {fx,fy};
   }
 
-  // -------- Game Step --------
+  // --- Game Step ---
   function step(dt){
     world.time += dt; world.tAccum += dt;
 
-    // Income
     if(world.tAccum>=2){ world.resources.credits+=10; world.tAccum=0; }
 
-    // Cooldowns/reveal/anim
+    // Cooldowns + walk anim + reveal around player units
     for(const u of world.units){
       if(u.cd>0) u.cd-=dt;
       if(u.f===F.PLAYER && u.hp>0) revealAround(u.x,u.y);
@@ -414,8 +446,7 @@
         for(const p of world.units){ if(p.f!==F.PLAYER||p.hp<=0) continue;
           const d2=(p.x-u.x)**2+(p.y-u.y)**2;
           if(d2<bd2 && Math.sqrt(d2)<190 && !blocked(u.x,u.y,p.x,p.y)){ bd2=d2; best=p; } }
-        if(best) u.target=best;
-        else { u.wander += (Math.random()-0.5)*0.2; u.x += Math.cos(u.wander)*0.6*60*dt; u.y += Math.sin(u.wander)*0.6*60*dt; }
+        if(best) u.target=best; else { u.wander += (Math.random()-0.5)*0.2; u.x += Math.cos(u.wander)*0.6*60*dt; u.y += Math.sin(u.wander)*0.6*60*dt; }
       }
     }
 
@@ -427,10 +458,7 @@
       if(t){
         const tx=t.x, ty=t.y, dist=Math.hypot(tx-u.x,ty-u.y);
         const inRange=dist<=u.range;
-
-        // Riflemen need LoS; Grenadiers ignore trees for firing
         const canShoot = inRange && (u.unitType==='grenadier' ? true : !blocked(u.x,u.y,tx,ty));
-
         if(t.dummy){
           moveToward(u,tx,ty,dt,true);
           if(dist<6) u.target=null;
@@ -451,15 +479,13 @@
         const dx=u.x-tr.x, dy=u.y-tr.y, d=Math.hypot(dx,dy);
         if(d<tr.r+u.r){ const push=(tr.r+u.r-d)+0.1, nx=dx/(d||1), ny=dy/(d||1); u.x+=nx*push; u.y+=ny*push; }
       }
-      u.x=clamp(u.x,8,W-8); u.y=clamp(u.y,8,H-8);
+      u.x=clamp(u.x,8,MAP_W-8); u.y=clamp(u.y,8,MAP_H-8);
     }
 
-    // Bullets & grenades
+    // Projectiles
     for(let i=world.bullets.length-1;i>=0;i--){
       const b=world.bullets[i];
-
       if(b.ballistic){
-        // Parabolic arc from (ox,oy) -> (tx,ty)
         b.t += dt;
         const k = Math.min(1, b.t / b.tMax);
         const x = b.ox + (b.tx - b.ox) * k;
@@ -468,29 +494,14 @@
         const h = Math.min(90, 18 + dist*0.18);
         const yArc = y - (4 * h * k * (1 - k));
         b.x = x; b.y = yArc;
-
-        if(k >= 1){
-          explode(b.x,b.y,b.blastRadius,b.dmg,b.f,b.from);
-          world.bullets.splice(i,1);
-          continue;
-        }
+        if(k >= 1){ explode(b.x,b.y,b.blastRadius,b.dmg,b.f,b.from); world.bullets.splice(i,1); continue; }
       } else {
         const ang=Math.atan2(b.ty-b.y,b.tx-b.x);
         const nx=Math.cos(ang)*b.spd*60*dt, ny=Math.sin(ang)*b.spd*60*dt;
-
-        if(blocked(b.ox,b.oy,b.x+nx,b.y+ny)){ 
-          world.bullets.splice(i,1); 
-          continue; 
-        }
-
+        if(blocked(b.ox,b.oy,b.x+nx,b.y+ny)){ world.bullets.splice(i,1); continue; }
         b.x+=nx; b.y+=ny; b.life-=dt;
         const t=b.target;
-        if(t && t.hp>0 && Math.hypot(b.x-t.x,b.y-t.y)<t.r+3){
-          t.hp -= b.dmg;
-          reactToAttack(t, b.from);
-          world.bullets.splice(i,1); 
-          continue;
-        }
+        if(t && t.hp>0 && Math.hypot(b.x-t.x,b.y-t.y)<t.r+3){ t.hp -= b.dmg; reactToAttack(t, b.from); world.bullets.splice(i,1); continue; }
         if(b.life<=0){ world.bullets.splice(i,1); }
       }
     }
@@ -498,19 +509,17 @@
     // Explosions fade
     if(world.explosions){ for(let i=world.explosions.length-1;i>=0;i--){ const e=world.explosions[i]; e.life-=dt; if(e.life<=0) world.explosions.splice(i,1); } }
 
-    // Barracks production (queue)
-    const barracks = getBarracks(F.PLAYER);
-    if(barracks && barracks.hp>0){
-      if(!barracks.current && b.queue?.length>0){ startNextInQueue(barracks); }
-      if(barracks.current){
-        barracks.timeLeft -= dt;
-        if(barracks.timeLeft<=0){
-          const spawnX=barracks.x+barracks.w/2+(Math.random()-0.5)*20, spawnY=barracks.y-10;
-          const nu=spawn(spawnX,spawnY,barracks.f,barracks.current.kind);
-          nu.selected=true; world.selection.add(nu);
-          updateSelectionHUD();
-          barracks.current=null; barracks.timeLeft=0;
-          startNextInQueue(barracks);
+    // Barracks production
+    const b = getBarracks(F.PLAYER);
+    if(b && b.hp>0){
+      if(!b.current && b.queue.length>0){ startNextInQueue(b); }
+      if(b.current){
+        b.timeLeft -= dt;
+        if(b.timeLeft<=0){
+          const spawnX=b.x+b.w/2+(Math.random()-0.5)*20, spawnY=b.y-10;
+          const nu=spawn(spawnX,spawnY,b.f,b.current.kind);
+          nu.selected=true; world.selection.add(nu); updateSelectionHUD();
+          b.current=null; b.timeLeft=0; startNextInQueue(b);
         }
       }
     }
@@ -520,22 +529,17 @@
       const f=world.clickFx[i]; f.age+=dt; if(f.age>=f.life) world.clickFx.splice(i,1);
     }
 
-    // Deaths + end (play SFX)
+    // Deaths + SFX
     for(let i=world.units.length-1;i>=0;i--){
       const u=world.units[i]; if(u.hp>0) continue;
-
-      const s = deathSoundBase.cloneNode();
-      s.play().catch(()=>{});
-
-      // If a dead unit was selected, remove from HUD
+      const s = deathSoundBase.cloneNode(); s.play().catch(()=>{});
       if(u.selected){ world.selection.delete(u); }
-
       if(u.f===F.PLAYER) world.stats.lost++; else world.stats.kills++;
       world.units.splice(i,1);
     }
-    // Keep HUD in sync (e.g., if some died)
     updateSelectionHUD();
 
+    // Win/lose
     const pAlive=world.units.some(u=>u.f===F.PLAYER), eAlive=world.units.some(u=>u.f===F.ENEMY);
     if(!pAlive||!eAlive) endGame(pAlive && !eAlive);
   }
@@ -543,26 +547,20 @@
   function moveToward(u,tx,ty,dt,applySep=false){
     const ang=Math.atan2(ty-u.y,tx-u.x), sp=u.s;
     let vx=Math.cos(ang)*sp, vy=Math.sin(ang)*sp;
-
     if(applySep){
       const sep = separation(u);
-      vx += (sep.fx*SEP_FORCE)/100;
-      vy += (sep.fy*SEP_FORCE)/100;
-      const spd=Math.hypot(vx,vy), max=sp*1.25;
-      if(spd>max){ vx*=max/spd; vy*=max/spd; }
+      vx += (sep.fx*SEP_FORCE)/100; vy += (sep.fy*SEP_FORCE)/100;
+      const spd=Math.hypot(vx,vy), max=sp*1.25; if(spd>max){ vx*=max/spd; vy*=max/spd; }
     }
-
-    // sidestep if immediate tree collision
+    // sidestep trees
     let blockedMove=false;
     for(const tr of world.trees){ const dx=(u.x+vx*60*dt)-tr.x, dy=(u.y+vy*60*dt)-tr.y; if(Math.hypot(dx,dy)<tr.r+u.r){ blockedMove=true; break; } }
     if(blockedMove){ const side=Math.random()<.5?Math.PI/2:-Math.PI/2; vx=Math.cos(ang+side)*sp*.85; vy=Math.sin(ang+side)*sp*.85; }
-
     u.vx=vx; u.vy=vy; u.x+=vx*60*dt; u.y+=vy*60*dt;
   }
 
   function fire(from,target){
     if(from.unitType==='grenadier'){
-      // Ballistic grenade that ignores trees & explodes at target
       const dist = Math.hypot(target.x - from.x, target.y - from.y);
       const flight = clamp(0.55 + dist / 600, 0.55, 1.2);
       world.bullets.push({
@@ -573,7 +571,6 @@
         explosive:true, blastRadius:35
       });
     } else {
-      // regular bullet (blocked by trees)
       world.bullets.push({x:from.x,y:from.y,ox:from.x,oy:from.y,tx:target.x,ty:target.y,target,
                           spd:5.5,dmg:from.dmg,life:.6,f:from.f,from,explosive:false});
     }
@@ -593,36 +590,60 @@
     }
   }
 
-  // -------- Drawing helpers --------
+  // --- Drawing helpers (camera-aware) ---
   function drawTerrain(){
+    const sx=cam.x, sy=cam.y, sw=VIEW_W, sh=VIEW_H;
     if(world.terrainImg){
-      const img = world.terrainImg;
-      const iw=img.naturalWidth, ih=img.naturalHeight, ir=iw/ih, cr=W/H;
-      let sx=0, sy=0, sw=iw, sh=ih;
-      if(ir>cr){ sw = ih*cr; sx = (iw - sw)/2; } else { sh = iw/cr; sy = (ih - sh)/2; }
-      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
+      if(!world._terrainCanvas){
+        const tc=document.createElement('canvas'); tc.width=MAP_W; tc.height=MAP_H;
+        const tctx=tc.getContext('2d');
+        const pat = tctx.createPattern(world.terrainImg,'repeat');
+        if(pat){ tctx.fillStyle=pat; tctx.fillRect(0,0,MAP_W,MAP_H); }
+        else { tctx.drawImage(world.terrainImg, 0,0,MAP_W,MAP_H); }
+        world._terrainCanvas = tc;
+      }
+      ctx.drawImage(world._terrainCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
       return;
     }
-    ctx.fillStyle='#355a2f'; ctx.fillRect(0,0,W,H);
-    for(const g of world.grass){ ctx.fillStyle=`rgba(84,140,72,${g.a})`; ctx.beginPath(); ctx.arc(g.x,g.y,g.r,0,Math.PI*2); ctx.fill(); }
-    for(const t of world.terrain){ ctx.fillStyle=t.color; ctx.beginPath(); ctx.arc(t.x,t.y,t.r,0,Math.PI*2); ctx.fill(); }
+    // Tiled ground pattern
+    if(groundPattern){
+      ctx.save();
+      ctx.translate(- (cam.x % 256), - (cam.y % 256));
+      ctx.fillStyle = groundPattern;
+      ctx.fillRect(-256, -256, VIEW_W+512, VIEW_H+512);
+      ctx.restore();
+    } else {
+      ctx.fillStyle='#355a2f'; ctx.fillRect(0,0,VIEW_W,VIEW_H);
+    }
+    // Variation blobs (within view)
+    for(const g of world.grass){ 
+      const s=worldToScreen(g.x,g.y); if(s.x<-120||s.y<-120||s.x>VIEW_W+120||s.y>VIEW_H+120) continue;
+      ctx.fillStyle=`rgba(84,140,72,${g.a})`; ctx.beginPath(); ctx.arc(s.x,s.y,g.r,0,Math.PI*2); ctx.fill(); 
+    }
+    for(const t of world.terrain){ 
+      const s=worldToScreen(t.x,t.y); if(s.x<-120||s.y<-120||s.x>VIEW_W+120||s.y>VIEW_H+120) continue;
+      ctx.fillStyle=t.color; ctx.beginPath(); ctx.arc(s.x,s.y,t.r,0,Math.PI*2); ctx.fill(); 
+    }
   }
 
   function drawTrees(){
     for(const t of world.trees){
-      if(!revealed(t.x,t.y)) continue;
-      ctx.fillStyle='rgba(0,0,0,.35)'; ctx.beginPath(); ctx.arc(t.x+2,t.y+2,t.r,0,Math.PI*2); ctx.fill();
-      const grad=ctx.createRadialGradient(t.x-2,t.y-2,2,t.x,t.y,t.r);
+      const s=worldToScreen(t.x,t.y);
+      if(s.x<-t.r-4||s.y<-t.r-4||s.x>VIEW_W+t.r+4||s.y>VIEW_H+t.r+4) continue;
+      ctx.fillStyle='rgba(0,0,0,.35)'; ctx.beginPath(); ctx.arc(s.x+2,s.y+2,t.r,0,Math.PI*2); ctx.fill();
+      const grad=ctx.createRadialGradient(s.x-2,s.y-2,2,s.x,s.y,t.r);
       grad.addColorStop(0,'#3f7a3f'); grad.addColorStop(1,'#235a29');
-      ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(t.x,t.y,t.r,0,Math.PI*2); ctx.fill();
-      ctx.fillStyle='#5a3a21'; ctx.beginPath(); ctx.arc(t.x,t.y+t.r*0.6,3,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(s.x,s.y,t.r,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#5a3a21'; ctx.beginPath(); ctx.arc(s.x,s.y+t.r*0.6,3,0,Math.PI*2); ctx.fill();
     }
   }
 
-  // Barracks art (player blue / enemy red)
   function drawBarracks(b){
     const isPlayer = b.f===F.PLAYER;
-    const x=b.x, y=b.y, w=b.w, h=b.h;
+    const s=worldToScreen(b.x,b.y);
+    const x=s.x, y=s.y, w=b.w, h=b.h;
+
+    if(x<-w||y<-h||x>VIEW_W||y>VIEW_H) return;
 
     ctx.fillStyle='rgba(0,0,0,.35)'; ctx.fillRect(x+3,y+3,w,h);
     ctx.fillStyle = isPlayer ? '#4a8bd3' : '#d34a4a';
@@ -638,120 +659,104 @@
     ctx.fillRect(x+6,y-8,2,8);
     ctx.beginPath(); ctx.moveTo(x+8,y-8); ctx.lineTo(x+22,y-3); ctx.lineTo(x+8,y+2); ctx.closePath(); ctx.fill();
 
+    // HP bar
     ctx.fillStyle='#0e121d'; ctx.fillRect(x,y-10,w,4);
     ctx.fillStyle='#36d399'; ctx.fillRect(x,y-10,w*(b.hp/b.max),4);
 
+    // Production
     if(b.current){
-      const total = b.current.time;
-      const prog = Math.max(0,1 - b.timeLeft/total);
-      ctx.fillStyle='#36d399';
-      ctx.fillRect(x,y-16,w*prog,4);
+      const total = b.current.time; const prog = Math.max(0,1 - b.timeLeft/total);
+      ctx.fillStyle='#36d399'; ctx.fillRect(x,y-16,w*prog,4);
     }
     if(b.queue.length>0){
-      ctx.fillStyle='#ffffff';
-      ctx.font='12px system-ui';
+      ctx.fillStyle='#ffffff'; ctx.font='12px system-ui';
       ctx.fillText(`Queue: ${b.queue.length}`, x, y-20);
     }
   }
 
   function roundRect(x,y,w,h,r,fill,stroke){
     ctx.beginPath();
-    ctx.moveTo(x+r,y);
-    ctx.lineTo(x+w-r,y);
-    ctx.quadraticCurveTo(x+w,y,x+w,y+r);
-    ctx.lineTo(x+w,y+h-r);
-    ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
-    ctx.lineTo(x+r,y+h);
-    ctx.quadraticCurveTo(x,y+h,x,y+h-r);
-    ctx.lineTo(x,y+r);
-    ctx.quadraticCurveTo(x,y,x+r,y);
-    if(fill) ctx.fill();
-    if(stroke) ctx.stroke();
+    ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+    ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+    ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+    ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y);
+    if(fill) ctx.fill(); if(stroke) ctx.stroke();
   }
 
   function drawBuildings(){
-    for(const b of world.buildings){
-      if(b.f!==F.PLAYER && !revealed(b.x,b.y)) continue;
-      if(b.type===BUILDING_TYPES.BARRACKS){ drawBarracks(b); }
-    }
+    for(const b of world.buildings){ drawBarracks(b); }
   }
 
-  // Animated soldier
+  // Animated soldier (camera-aware)
   function drawSoldier(u){
-    const dir = u.facing;
-    ctx.save(); ctx.translate(u.x,u.y); ctx.rotate(dir);
+    const s=worldToScreen(u.x,u.y);
+    if(s.x<-30||s.y<-30||s.x>VIEW_W+30||s.y>VIEW_H+30) return;
 
-    // shadow
+    const dir = u.facing;
+    ctx.save(); ctx.translate(s.x,s.y); ctx.rotate(dir);
+
     ctx.fillStyle='rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(2,3,u.r*0.9,u.r*0.6,0,0,Math.PI*2); ctx.fill();
 
-    // legs (swing)
     const swing = Math.sin(u.walk)*3.2, backSwing = -Math.sin(u.walk)*3.2;
     ctx.strokeStyle = '#1c2535'; ctx.lineWidth=2;
     ctx.beginPath(); ctx.moveTo(-2,4); ctx.lineTo(-2,4+swing); ctx.stroke();
     ctx.beginPath(); ctx.moveTo( 2,4); ctx.lineTo( 2,4+backSwing); ctx.stroke();
 
-    // body
     const bodyColor = (u.f===F.PLAYER)?'#4a6b8a':'#8a4a4a';
     ctx.fillStyle=bodyColor; ctx.fillRect(-3,-2,6,8);
 
-    // head + helmet
     ctx.fillStyle='#f4c2a1'; ctx.fillRect(-2.2,-6,4.4,3);
     ctx.fillStyle=(u.f===F.PLAYER)?'#2d4a6b':'#6b2d2d'; ctx.fillRect(-3,-7,6,2);
 
-    // weapon
     ctx.fillStyle='#303030';
     if(u.unitType==='grenadier'){ ctx.fillRect(4,-1,6,2); ctx.fillRect(10,-2,2,4); }
     else { ctx.fillRect(3,-1,7,1.5); ctx.fillRect(10,-2,1.5,3); }
 
-    // selection ring
     if(u.selected){ ctx.strokeStyle='#d7f5ff'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(0,0,u.r+3,0,Math.PI*2); ctx.stroke(); }
-
     ctx.restore();
+
     // HP bar
-    ctx.fillStyle='#0e121d'; ctx.fillRect(u.x-10,u.y-16,20,4);
-    ctx.fillStyle='#36d399'; ctx.fillRect(u.x-10,u.y-16,20*(u.hp/u.max),4);
+    ctx.fillStyle='#0e121d'; ctx.fillRect(s.x-10,s.y-16,20,4);
+    ctx.fillStyle='#36d399'; ctx.fillRect(s.x-10,s.y-16,20*(u.hp/u.max),4);
   }
 
   function drawBulletsExplosions(){
-    // bullets
     for(const b of world.bullets){
+      const s=worldToScreen(b.x,b.y);
       if(b.ballistic){
-        ctx.fillStyle='#f0e06b';
-        ctx.beginPath(); ctx.arc(b.x,b.y,3,0,Math.PI*2); ctx.fill();
-        ctx.fillStyle='rgba(240,224,107,.25)';
-        ctx.beginPath(); ctx.arc(b.x,b.y+3,2,0,Math.PI*2); ctx.fill();
-      }else{
-        ctx.fillStyle='#f8f1b8'; ctx.fillRect(b.x-2,b.y-2,4,4);
+        ctx.fillStyle='#f0e06b'; ctx.beginPath(); ctx.arc(s.x,s.y,3,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='rgba(240,224,107,.25)'; ctx.beginPath(); ctx.arc(s.x,s.y+3,2,0,Math.PI*2); ctx.fill();
+      } else {
+        ctx.fillStyle='#f8f1b8'; ctx.fillRect(s.x-2,s.y-2,4,4);
       }
     }
-    // explosions
     if(world.explosions){
       for(const e of world.explosions){
+        const s=worldToScreen(e.x,e.y);
         const a=e.life/e.maxLife, sz=e.radius*(1-a);
-        const g=ctx.createRadialGradient(e.x,e.y,0,e.x,e.y,sz);
+        const g=ctx.createRadialGradient(s.x,s.y,0,s.x,s.y,sz);
         g.addColorStop(0,`rgba(255,120,0,${a*.8})`);
         g.addColorStop(.6,`rgba(255,200,0,${a*.35})`);
         g.addColorStop(1,`rgba(255,120,0,0)`);
-        ctx.fillStyle=g; ctx.beginPath(); ctx.arc(e.x,e.y,sz,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle=g; ctx.beginPath(); ctx.arc(s.x,s.y,sz,0,Math.PI*2); ctx.fill();
       }
     }
   }
 
   function drawClickFx(){
     for(const f of world.clickFx){
-      const k=f.age/f.life;
-      const r=8+40*k, a=1-k;
+      const k=f.age/f.life, r=8+40*k, a=1-k;
+      const s=worldToScreen(f.x,f.y);
       ctx.strokeStyle=f.color; ctx.lineWidth=2*a;
-      ctx.beginPath(); ctx.arc(f.x,f.y,r,0,Math.PI*2); ctx.stroke();
-      // small crosshair lines
-      ctx.beginPath(); ctx.moveTo(f.x-6,f.y); ctx.lineTo(f.x-2,f.y); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(f.x+2,f.y); ctx.lineTo(f.x+6,f.y); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(f.x,f.y-6); ctx.lineTo(f.x,f.y-2); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(f.x,f.y+2); ctx.lineTo(f.x,f.y+6); ctx.stroke();
+      ctx.beginPath(); ctx.arc(s.x,s.y,r,0,Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(s.x-6,s.y); ctx.lineTo(s.x-2,s.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(s.x+2,s.y); ctx.lineTo(s.x+6,s.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(s.x,s.y-6); ctx.lineTo(s.x,s.y-2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(s.x,s.y+2); ctx.lineTo(s.x,s.y+6); ctx.stroke();
     }
   }
 
-  // -------- Selection HUD logic --------
+  // --- Selection HUD ---
   function updateSelectionHUD(){
     const arr = [...world.selection].filter(u=>u.hp>0);
     selCountEl.textContent = arr.length.toString();
@@ -761,15 +766,9 @@
       tile.className = 'tile ' + (u.unitType==='grenadier' ? 'gren' : 'rifle');
       tile.title = `${u.unitType} • HP ${Math.max(0,Math.ceil(u.hp))}/${u.max}`;
       tile.textContent = u.unitType==='grenadier' ? 'G' : 'R';
-
-      const hpWrap = document.createElement('div');
-      hpWrap.className = 'hpbar';
-      const hpFill = document.createElement('span');
-      hpFill.style.width = `${Math.max(0, (u.hp/u.max)*100)}%`;
-      hpWrap.appendChild(hpFill);
-      tile.appendChild(hpWrap);
-
-      selGridEl.appendChild(tile);
+      const hpWrap = document.createElement('div'); hpWrap.className = 'hpbar';
+      const hpFill = document.createElement('span'); hpFill.style.width = `${Math.max(0, (u.hp/u.max)*100)}%`;
+      hpWrap.appendChild(hpFill); tile.appendChild(hpWrap); selGridEl.appendChild(tile);
     }
   }
   function flashOrder(text){
@@ -779,27 +778,70 @@
     orderFlashTimer = setTimeout(()=>orderFlash.classList.remove('show'), 700);
   }
 
-  // -------- Render --------
+  // --- Fog draw (overlay current viewport) ---
+  function drawFog(){
+    ctx.drawImage(fogCanvas, cam.x, cam.y, VIEW_W, VIEW_H, 0, 0, VIEW_W, VIEW_H);
+  }
+
+  // --- Minimap draw ---
+  function drawMinimap(){
+    // Base tint
+    mctx.fillStyle = '#203046'; mctx.fillRect(0,0,MINI_W,MINI_H);
+    // Copy fog downscaled (black = unrevealed)
+    try{
+      const temp = document.createElement('canvas'); temp.width=MINI_W; temp.height=MINI_H;
+      const tctx=temp.getContext('2d');
+      tctx.drawImage(fogCanvas, 0,0,MAP_W,MAP_H, 0,0,MINI_W,MINI_H);
+      mctx.drawImage(temp,0,0);
+      // Camera rect
+      mctx.strokeStyle = '#8ab4ff'; mctx.lineWidth = 1;
+      const rx = cam.x * mScaleX, ry = cam.y * mScaleY, rw = VIEW_W * mScaleX, rh = VIEW_H * mScaleY;
+      mctx.strokeRect(rx, ry, rw, rh);
+    }catch(_e){
+      mctx.strokeStyle = '#8ab4ff'; mctx.strokeRect(cam.x*mScaleX, cam.y*mScaleY, VIEW_W*mScaleX, VIEW_H*mScaleY);
+    }
+    // Units
+    for(const u of world.units){
+      mctx.fillStyle = (u.f===F.PLAYER)?'#3bd1ff':'#ff6666';
+      mctx.fillRect((u.x*mScaleX)|0, (u.y*mScaleY)|0, 2, 2);
+    }
+  }
+
+  // --- Render ---
   function draw(){
     drawTerrain();
     drawTrees();
     drawBuildings();
 
+    // Units: enemy shown only when currently in vision of some player unit
     for(const u of world.units){
-      if(u.f===F.PLAYER || revealed(u.x,u.y)) drawSoldier(u);
+      if(u.f===F.PLAYER) { drawSoldier(u); }
+      else {
+        let visible=false;
+        for(const p of world.units){
+          if(p.f!==F.PLAYER || p.hp<=0) continue;
+          if(Math.hypot(u.x-p.x,u.y-p.y) <= VISION_RADIUS){ visible=true; break; }
+        }
+        if(visible) drawSoldier(u);
+      }
     }
 
     drawBulletsExplosions();
     drawClickFx();
 
-    if(world.selBox){ const s=world.selBox; ctx.setLineDash([6,4]); ctx.strokeStyle='#8ab4ff'; ctx.strokeRect(s.x,s.y,s.w,s.h); ctx.setLineDash([]); }
+    // Selection box (camera aware)
+    if(world.selBox){ 
+      const s=world.selBox; const a=worldToScreen(s.x,s.y);
+      ctx.setLineDash([6,4]); ctx.strokeStyle='#8ab4ff'; ctx.strokeRect(a.x, a.y, s.w, s.h); ctx.setLineDash([]); 
+    }
+
+    // Fog overlay LAST
+    drawFog();
 
     // HUD text
     ctx.fillStyle='#ffffff'; ctx.font='bold 14px system-ui';
     const p=world.units.filter(u=>u.f===F.PLAYER).length, e=world.units.filter(u=>u.f===F.ENEMY).length;
     ctx.fillText(`Credits: ${world.resources.credits}  |  Troops: ${p}  |  Hostiles: ${e}`,10,20);
-
-    // Barracks HUD line
     const b = getBarracks(F.PLAYER);
     if(b){
       if(b.current){
@@ -809,9 +851,12 @@
         ctx.fillText(`Barracks: idle • Queue ${b.queue.length}`, 10, 40);
       }
     }
+
+    // Minimap
+    drawMinimap();
   }
 
-  // -------- Loop & end --------
+  // --- Loop & end ---
   let last=performance.now();
   function loop(now){
     if(world.ended) return;
@@ -825,18 +870,19 @@
     statsEl.textContent=`Time: ${sec}s • Lost: ${world.stats.lost} • Kills: ${world.stats.kills}`;
   }
 
-  // Drag/drop + button to set terrain image
-  terrainBtn.onclick = () => terrainFile.click();
+  // Drag/drop + button to set terrain image (used to tile-cover the whole MAP)
+  const terrainBtnEl = terrainBtn; // alias to avoid shadowing
+  terrainBtnEl.onclick = () => terrainFile.click();
   terrainFile.onchange = (e)=>{
     const file = e.target.files?.[0]; if(!file) return;
-    const img = new Image(); img.onload = ()=>{ world.terrainImg = img; };
+    const img = new Image(); img.onload = ()=>{ world.terrainImg = img; world._terrainCanvas=null; };
     img.src = URL.createObjectURL(file);
   };
-  ;['dragenter','dragover'].forEach(ev=>canvas.addEventListener(ev, e=>{ e.preventDefault(); }));
-  canvas.addEventListener('drop', e=>{
+  ;['dragenter','dragover'].forEach(ev=>ctx.canvas.addEventListener(ev, e=>{ e.preventDefault(); }));
+  ctx.canvas.addEventListener('drop', e=>{
     e.preventDefault();
     const file = e.dataTransfer.files?.[0]; if(!file || !file.type.startsWith('image/')) return;
-    const img = new Image(); img.onload = ()=>{ world.terrainImg = img; };
+    const img = new Image(); img.onload = ()=>{ world.terrainImg = img; world._terrainCanvas=null; };
     img.src = URL.createObjectURL(file);
   });
 

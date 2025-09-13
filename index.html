@@ -12,7 +12,7 @@
     #wrap{height:100%;display:grid;place-items:center}
     canvas#c{touch-action:none;border:1px solid #1e2639;border-radius:12px;background:#0f1424;
            box-shadow:0 10px 30px rgba(0,0,0,.35)}
-    #overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(5,8,16,.65);z-index:5}
+    #overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(5,8,16,.65);z-index:6}
     #panel{background:#0f1424;border:1px solid #1e2639;padding:24px;border-radius:16px;text-align:center;max-width:520px}
     button{background:#1b2a4a;border:1px solid #2a3b65;color:#e6e8ef;padding:10px 14px;border-radius:10px;cursor:pointer}
     #btns{display:flex;gap:8px}
@@ -46,6 +46,24 @@
     }
     #minimap{display:block;border-radius:8px;border:1px solid #1e2639;background:#192233}
     #miniLabel{font-size:12px;color:#aab4d0;margin-bottom:6px}
+
+    /* Help modal */
+    #helpModal{
+      position:fixed; inset:0; display:none; z-index:7;
+      align-items:center; justify-content:center;
+      background:rgba(5,8,16,.65);
+    }
+    #helpCard{
+      background:#0f1424;border:1px solid #1e2639;border-radius:16px;
+      padding:20px; max-width:680px; color:#e6e8ef;
+      box-shadow:0 20px 50px rgba(0,0,0,.45)
+    }
+    #helpCard h2{margin:0 0 8px 0}
+    #helpCard .grid{display:grid;grid-template-columns:repeat(2,minmax(240px,1fr));gap:10px}
+    #helpCard kbd{background:#121827;border:1px solid #1e2639;border-bottom-color:#121a2d;
+      padding:2px 6px;border-radius:6px;font-size:12px}
+    #helpCard ul{margin:8px 0 0 18px}
+    #helpBtn{font-weight:700}
   </style>
 </head>
 <body>
@@ -58,6 +76,7 @@
       <button id="restart">Restart</button>
       <button id="terrainBtn">Use image terrain</button>
       <input id="terrainFile" type="file" accept="image/*" />
+      <button id="helpBtn">?</button>
     </div>
     <div class="spacer"></div>
     <div id="audioControls">
@@ -65,7 +84,7 @@
       <input id="volumeSlider" type="range" min="0" max="1" step="0.05" value="0.25" />
     </div>
     <div class="pill"><b>Army Skirmish</b> — click ground to move (green), enemy to attack (red)</div>
-    <div class="pill">Large map • Minimap click-to-pan • True Fog of War</div>
+    <div class="pill">Large map • Minimap click-to-pan • Fog of War</div>
   </div>
 
   <!-- Selection HUD -->
@@ -77,8 +96,53 @@
 
   <!-- Minimap -->
   <div id="minimapWrap">
-    <div id="miniLabel">Minimap</div>
+    <div id="miniLabel">Minimap (click to pan)</div>
     <canvas id="minimap" width="200" height="125"></canvas>
+  </div>
+
+  <!-- Help Modal -->
+  <div id="helpModal">
+    <div id="helpCard">
+      <h2>How to Play</h2>
+      <div class="grid">
+        <div>
+          <h3>Basic</h3>
+          <ul>
+            <li>Drag on the map to <b>box select</b> units.</li>
+            <li>Click ground to <b>move</b> (green target).</li>
+            <li>Click enemy to <b>attack</b> (red target).</li>
+            <li>Use the <b>minimap</b> (top-right) to jump view.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Camera</h3>
+          <ul>
+            <li><kbd>WASD</kbd> / <kbd>Arrow Keys</kbd> to pan (hold <kbd>Shift</kbd> for faster).</li>
+            <li><kbd>Space</kbd> + <b>Left Drag</b> or <b>Middle-Mouse Drag</b> to pan.</li>
+            <li>Move mouse near canvas edge to <b>edge-scroll</b>.</li>
+            <li><b>Mouse wheel</b> pans vertically.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Units</h3>
+          <ul>
+            <li><b>Rifleman</b>: mid-range direct fire.</li>
+            <li><b>Grenadier</b>: long-range lob (arcs over trees), splash damage.</li>
+            <li>Allies near a unit under fire will <b>assist</b> automatically.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Building</h3>
+          <ul>
+            <li>Use buttons to <b>queue</b> Riflemen/Grenadiers.</li>
+            <li>Credits tick in over time.</li>
+          </ul>
+        </div>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+        <button id="closeHelp">Close</button>
+      </div>
+    </div>
   </div>
 
   <div id="wrap"><canvas id="c" width="960" height="600"></canvas></div>
@@ -120,6 +184,9 @@
   const terrainFile=document.getElementById('terrainFile');
   const muteBtn=document.getElementById('muteBtn');
   const volumeSlider=document.getElementById('volumeSlider');
+  const helpBtn=document.getElementById('helpBtn');
+  const helpModal=document.getElementById('helpModal');
+  const helpClose=document.getElementById('closeHelp');
 
   // Selection HUD
   const selCountEl = document.getElementById('selCount');
@@ -166,10 +233,64 @@
   fogCanvas.width = MAP_W; fogCanvas.height = MAP_H;
   const fogCtx = fogCanvas.getContext('2d');
 
-  // Default ground tiling
-  let groundPattern=null; const groundImg = new Image();
+  // --- Camera panning state ---
+  const PAN_SPEED = 520;        // px/sec (keyboard)
+  const PAN_SPEED_FAST = 980;   // px/sec when Shift is held
+  const EDGE_BAND = 18;         // px from canvas edge to trigger edge-scroll
+  let keys = new Set();
+  let isPanningDrag = false;    // space+drag or middle-mouse drag
+  let dragStartScreen = null;   // screen coords
+  let dragStartCam = null;      // camera snapshot at drag begin
+
+  function panBy(dx, dy) {
+    cam.x = Math.max(0, Math.min(cam.x + dx, MAP_W - VIEW_W));
+    cam.y = Math.max(0, Math.min(cam.y + dy, MAP_H - VIEW_H));
+  }
+  function centerCamera(cx,cy){
+    cam.x = Math.max(0, Math.min(cx - VIEW_W/2, MAP_W - VIEW_W));
+    cam.y = Math.max(0, Math.min(cy - VIEW_H/2, MAP_H - VIEW_H));
+  }
+  function worldToScreen(x,y){ return { x: x - cam.x, y: y - cam.y }; }
+  function screenToWorld(x,y){ return { x: x + cam.x, y: y + cam.y }; }
+
+  // Minimap interaction
+  mini.addEventListener('pointerdown', (e)=>{
+    const r=mini.getBoundingClientRect();
+    const mx = (e.clientX - r.left), my = (e.clientY - r.top);
+    const wx = Math.max(0, Math.min(mx / mScaleX, MAP_W));
+    const wy = Math.max(0, Math.min(my / mScaleY, MAP_H));
+    centerCamera(wx, wy);
+  });
+
+  // Help modal (show on first load and on button)
+  const firstRunKey = 'skirmish_help_seen_v1';
+  function showHelp(){ helpModal.style.display='flex'; }
+  function hideHelp(){ helpModal.style.display='none'; localStorage.setItem(firstRunKey,'1'); }
+  if(!localStorage.getItem(firstRunKey)) showHelp();
+  helpBtn.onclick = showHelp;
+  helpClose.onclick = hideHelp;
+  helpModal.addEventListener('click', (e)=>{ if(e.target===helpModal) hideHelp(); });
+
+  // Default ground tiling with graceful fallback
+  let groundPattern=null;
+  const groundImg = new Image();
+  groundImg.crossOrigin = "anonymous";
   groundImg.onload = ()=>{ groundPattern = ctx.createPattern(groundImg,'repeat'); };
-  groundImg.src = 'assets/grass_tile.jpg'; // optional; if missing, will fallback to solid
+  groundImg.onerror = ()=>{
+    // Fallback: generate a tiny canvas pattern so the game still looks ok
+    const tile = document.createElement('canvas');
+    tile.width = 64; tile.height = 64;
+    const tctx = tile.getContext('2d');
+    tctx.fillStyle = '#3b5d2f'; tctx.fillRect(0,0,64,64);
+    tctx.fillStyle = '#466d38';
+    for (let y=0; y<64; y+=8){
+      for (let x= (y%16===0?0:8); x<64; x+=16){
+        tctx.fillRect(x, y, 8, 8);
+      }
+    }
+    groundPattern = ctx.createPattern(tile, 'repeat');
+  };
+  groundImg.src = 'assets/grass_tile.jpg'; // if this 404s, onerror will kick in
 
   function reset(){
     // init fog (completely black)
@@ -239,34 +360,63 @@
     world.units.push(u); return u;
   }
 
-  // --- Camera helpers ---
-  function centerCamera(cx,cy){
-    cam.x = Math.max(0, Math.min(cx - VIEW_W/2, MAP_W - VIEW_W));
-    cam.y = Math.max(0, Math.min(cy - VIEW_H/2, MAP_H - VIEW_H));
-  }
-  function worldToScreen(x,y){ return { x: x - cam.x, y: y - cam.y }; }
-  function screenToWorld(x,y){ return { x: x + cam.x, y: y + cam.y }; }
-
   // --- Input (pointer) + cursor logic ---
   let pointer={x:0,y:0,down:false,dragStart:null,dragging:false, overEnemy:false};
   const DRAG_THRESH=8;
 
   const canvas=ctx.canvas;
-  canvas.addEventListener('pointerdown',e=>{
+
+  // Keyboard pan
+  window.addEventListener('keydown', (e) => {
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' ','Space','PageUp','PageDown','Home','End'].includes(e.key)) {
+      e.preventDefault();
+    }
+    keys.add(e.key);
+    updateCursorForPanMode();
+  });
+  window.addEventListener('keyup', (e) => { keys.delete(e.key); updateCursorForPanMode(); });
+
+  function updateCursorForPanMode(){
+    const spaceHeld = keys.has(' ') || keys.has('Space');
+    if (!isPanningDrag && spaceHeld) canvas.style.cursor = 'grab';
+  }
+
+  // Begin drag-to-pan if Space is held or middle mouse pressed
+  canvas.addEventListener('pointerdown', (e) => {
+    const isMiddle = (e.button === 1);
+    const spaceHeld = keys.has(' ') || keys.has('Space');
+    if (isMiddle || spaceHeld) {
+      isPanningDrag = true;
+      dragStartScreen = { x: e.clientX, y: e.clientY };
+      dragStartCam = { x: cam.x, y: cam.y };
+      canvas.style.cursor = 'grabbing';
+      world.selBox = null; // prevent selection box while panning
+      return;
+    }
+    // ---- selection start ----
     canvas.setPointerCapture(e.pointerId);
     const p=screenToWorld(...Object.values(pos(e)));
     pointer.x=p.x; pointer.y=p.y; pointer.down=true; pointer.dragStart={x:p.x,y:p.y}; pointer.dragging=false;
     world.selBox={x:p.x,y:p.y,w:0,h:0};
-  });
+  }, { capture: true });
 
-  canvas.addEventListener('pointermove',e=>{
+  canvas.addEventListener('pointermove', (e) => {
+    if (isPanningDrag && dragStartScreen) {
+      const dx = e.clientX - dragStartScreen.x;
+      const dy = e.clientY - dragStartScreen.y;
+      panBy(-dx, -dy);
+      return;
+    }
     const s=pos(e); const p=screenToWorld(s.x,s.y);
     pointer.x=p.x; pointer.y=p.y;
     const hasSelection = world.selection.size>0;
+    const spaceHeld = keys.has(' ') || keys.has('Space');
     pointer.overEnemy = !!unitAt(p.x,p.y,F.ENEMY);
-    if (hasSelection && pointer.overEnemy) canvas.style.cursor = redTarget;
-    else if (hasSelection) canvas.style.cursor = greenTarget;
-    else canvas.style.cursor = defaultCursor;
+    if (!spaceHeld) {
+      if (hasSelection && pointer.overEnemy) canvas.style.cursor = redTarget;
+      else if (hasSelection) canvas.style.cursor = greenTarget;
+      else canvas.style.cursor = defaultCursor;
+    }
 
     if(pointer.down && pointer.dragStart){
       const dx=p.x-pointer.dragStart.x, dy=p.y-pointer.dragStart.y;
@@ -276,9 +426,16 @@
                       w:Math.abs(dx), h:Math.abs(dy)};
       }
     }
-  });
+  }, { capture: true });
 
-  canvas.addEventListener('pointerup',e=>{
+  canvas.addEventListener('pointerup', (e) => {
+    if (isPanningDrag) {
+      isPanningDrag = false;
+      dragStartScreen = null;
+      dragStartCam = null;
+      canvas.style.cursor = 'grab';
+      return;
+    }
     const p=screenToWorld(...Object.values(pos(e))); pointer.down=false;
     const hasSel = world.selection.size>0;
     if(pointer.dragging && world.selBox){
@@ -305,21 +462,20 @@
       }
     }
     world.selBox=null; pointer.dragStart=null; pointer.dragging=false;
-  });
+  }, { capture: true });
+
+  // Optional: Mouse wheel for vertical pan
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const delta = Math.sign(e.deltaY) * 80;
+    panBy(0, delta);
+  }, { passive: false });
 
   // Prevent context menu
   canvas.addEventListener('contextmenu', e=>e.preventDefault(), {passive:false});
+
   function addClickFx(x,y,color){ world.clickFx.push({x,y,color,age:0,life:0.5}); }
   function pos(e){ const r=canvas.getBoundingClientRect(); return {x:(e.clientX-r.left), y:(e.clientY-r.top)}; }
-
-  // --- Minimap interaction ---
-  mini.addEventListener('pointerdown', (e)=>{
-    const r=mini.getBoundingClientRect();
-    const mx = (e.clientX - r.left), my = (e.clientY - r.top);
-    const wx = Math.max(0, Math.min(mx / mScaleX, MAP_W));
-    const wy = Math.max(0, Math.min(my / mScaleY, MAP_H));
-    centerCamera(wx, wy);
-  });
 
   // --- Buttons / Build Queue ---
   btnSelectAll.onclick=()=>{
@@ -426,6 +582,34 @@
   // --- Game Step ---
   function step(dt){
     world.time += dt; world.tAccum += dt;
+
+    // Keyboard pan per frame
+    (function panCameraByKeys(){
+      let sx = 0, sy = 0;
+      const speed = (keys.has('Shift')) ? PAN_SPEED_FAST : PAN_SPEED;
+      if (keys.has('ArrowLeft') || keys.has('a') || keys.has('A')) sx -= speed * dt;
+      if (keys.has('ArrowRight')|| keys.has('d') || keys.has('D')) sx += speed * dt;
+      if (keys.has('ArrowUp')   || keys.has('w') || keys.has('W')) sy -= speed * dt;
+      if (keys.has('ArrowDown') || keys.has('s') || keys.has('S')) sy += speed * dt;
+      if (sx || sy) panBy(sx, sy);
+    })();
+
+    // Edge scroll
+    (function edgeScroll(){
+      if (isPanningDrag) return;
+      // pointer.x/y are world coords; convert to screen
+      const screenX = pointer.x - cam.x;
+      const screenY = pointer.y - cam.y;
+      let ex = 0, ey = 0;
+      if (screenX <= EDGE_BAND) ex = -1;
+      else if (screenX >= VIEW_W - EDGE_BAND) ex = 1;
+      if (screenY <= EDGE_BAND) ey = -1;
+      else if (screenY >= VIEW_H - EDGE_BAND) ey = 1;
+      if (ex || ey) {
+        const speed = PAN_SPEED * 0.8;
+        panBy(ex * speed * dt, ey * speed * dt);
+      }
+    })();
 
     if(world.tAccum>=2){ world.resources.credits+=10; world.tAccum=0; }
 
@@ -592,19 +776,6 @@
 
   // --- Drawing helpers (camera-aware) ---
   function drawTerrain(){
-    const sx=cam.x, sy=cam.y, sw=VIEW_W, sh=VIEW_H;
-    if(world.terrainImg){
-      if(!world._terrainCanvas){
-        const tc=document.createElement('canvas'); tc.width=MAP_W; tc.height=MAP_H;
-        const tctx=tc.getContext('2d');
-        const pat = tctx.createPattern(world.terrainImg,'repeat');
-        if(pat){ tctx.fillStyle=pat; tctx.fillRect(0,0,MAP_W,MAP_H); }
-        else { tctx.drawImage(world.terrainImg, 0,0,MAP_W,MAP_H); }
-        world._terrainCanvas = tc;
-      }
-      ctx.drawImage(world._terrainCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
-      return;
-    }
     // Tiled ground pattern
     if(groundPattern){
       ctx.save();
@@ -785,22 +956,18 @@
 
   // --- Minimap draw ---
   function drawMinimap(){
-    // Base tint
     mctx.fillStyle = '#203046'; mctx.fillRect(0,0,MINI_W,MINI_H);
-    // Copy fog downscaled (black = unrevealed)
     try{
       const temp = document.createElement('canvas'); temp.width=MINI_W; temp.height=MINI_H;
       const tctx=temp.getContext('2d');
       tctx.drawImage(fogCanvas, 0,0,MAP_W,MAP_H, 0,0,MINI_W,MINI_H);
       mctx.drawImage(temp,0,0);
-      // Camera rect
       mctx.strokeStyle = '#8ab4ff'; mctx.lineWidth = 1;
       const rx = cam.x * mScaleX, ry = cam.y * mScaleY, rw = VIEW_W * mScaleX, rh = VIEW_H * mScaleY;
       mctx.strokeRect(rx, ry, rw, rh);
     }catch(_e){
       mctx.strokeStyle = '#8ab4ff'; mctx.strokeRect(cam.x*mScaleX, cam.y*mScaleY, VIEW_W*mScaleX, VIEW_H*mScaleY);
     }
-    // Units
     for(const u of world.units){
       mctx.fillStyle = (u.f===F.PLAYER)?'#3bd1ff':'#ff6666';
       mctx.fillRect((u.x*mScaleX)|0, (u.y*mScaleY)|0, 2, 2);
@@ -813,7 +980,7 @@
     drawTrees();
     drawBuildings();
 
-    // Units: enemy shown only when currently in vision of some player unit
+    // Units: enemy only visible if within vision of any player unit
     for(const u of world.units){
       if(u.f===F.PLAYER) { drawSoldier(u); }
       else {
@@ -870,19 +1037,34 @@
     statsEl.textContent=`Time: ${sec}s • Lost: ${world.stats.lost} • Kills: ${world.stats.kills}`;
   }
 
-  // Drag/drop + button to set terrain image (used to tile-cover the whole MAP)
-  const terrainBtnEl = terrainBtn; // alias to avoid shadowing
-  terrainBtnEl.onclick = () => terrainFile.click();
+  // Drag/drop + button to set terrain image (used to tile-cover the map if desired)
+  terrainBtn.onclick = () => terrainFile.click();
   terrainFile.onchange = (e)=>{
     const file = e.target.files?.[0]; if(!file) return;
-    const img = new Image(); img.onload = ()=>{ world.terrainImg = img; world._terrainCanvas=null; };
+    const img = new Image(); img.onload = ()=>{
+      // Build a big tiled canvas from the image, full MAP size
+      const tc=document.createElement('canvas'); tc.width=MAP_W; tc.height=MAP_H;
+      const tctx=tc.getContext('2d');
+      const pat = tctx.createPattern(img,'repeat');
+      if(pat){ tctx.fillStyle=pat; tctx.fillRect(0,0,MAP_W,MAP_H); }
+      else { tctx.drawImage(img, 0,0,MAP_W,MAP_H); }
+      // Replace ground pattern with this baked texture
+      groundPattern = ctx.createPattern(tc, 'no-repeat');
+    };
     img.src = URL.createObjectURL(file);
   };
   ;['dragenter','dragover'].forEach(ev=>ctx.canvas.addEventListener(ev, e=>{ e.preventDefault(); }));
   ctx.canvas.addEventListener('drop', e=>{
     e.preventDefault();
     const file = e.dataTransfer.files?.[0]; if(!file || !file.type.startsWith('image/')) return;
-    const img = new Image(); img.onload = ()=>{ world.terrainImg = img; world._terrainCanvas=null; };
+    const img = new Image(); img.onload = ()=>{
+      const tc=document.createElement('canvas'); tc.width=MAP_W; tc.height=MAP_H;
+      const tctx=tc.getContext('2d');
+      const pat = tctx.createPattern(img,'repeat');
+      if(pat){ tctx.fillStyle=pat; tctx.fillRect(0,0,MAP_W,MAP_H); }
+      else { tctx.drawImage(img, 0,0,MAP_W,MAP_H); }
+      groundPattern = ctx.createPattern(tc, 'no-repeat');
+    };
     img.src = URL.createObjectURL(file);
   });
 

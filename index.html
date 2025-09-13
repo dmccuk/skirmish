@@ -239,7 +239,7 @@
 
   // Tile constants
   const TILE = { PLAIN:0, FOREST:1, WATER:2, ROCK:3 };
-  const TILE_SIZE = 50; // grid cell size (MAP_W % TILE_SIZE == 0, MAP_H % TILE_SIZE == 0)
+  const TILE_SIZE = 50; // grid cell size
   const GRID_W = MAP_W / TILE_SIZE; // 48
   const GRID_H = MAP_H / TILE_SIZE; // 32
 
@@ -288,7 +288,7 @@
   helpClose.onclick = hideHelp;
   helpModal.addEventListener('click', (e)=>{ if(e.target===helpModal) hideHelp(); });
 
-  // --- Pattern loaders with fallbacks (for each tile type) ---
+  // --- Pattern loaders with fallbacks ---
   function makeFallbackPattern(colorA, colorB){
     const tile = document.createElement('canvas'); tile.width=256; tile.height=256;
     const tctx = tile.getContext('2d');
@@ -300,12 +300,7 @@
     return tile;
   }
 
-  const patterns = {
-    [TILE.PLAIN]: null,
-    [TILE.FOREST]: null,
-    [TILE.WATER]: null,
-    [TILE.ROCK]: null
-  };
+  const patterns = { 0:null, 1:null, 2:null, 3:null };
 
   function loadPattern(path, fallbackA, fallbackB, done){
     const img = new Image();
@@ -320,42 +315,39 @@
   function loadAllPatterns(then){
     let left=4;
     const set = (type,pat)=>{ patterns[type]=pat; if(--left===0) then(); };
-    loadPattern('assets/grass_tile.jpg',  '#3b5d2f','#466d38', p=>set(TILE.PLAIN, p));
-    loadPattern('assets/forest_canopy_tile.jpg', '#2c4a2e','#355c35', p=>set(TILE.FOREST, p));
-    loadPattern('assets/water_tile.jpg',  '#1d4d7a','#2b6aa5', p=>set(TILE.WATER, p));
-    loadPattern('assets/rock_tile.jpg',   '#555555','#6e6e6e', p=>set(TILE.ROCK, p));
+    loadPattern('assets/grass_tile.jpg',  '#3b5d2f','#466d38', p=>set(0,p));
+    loadPattern('assets/forest_canopy_tile.jpg', '#2c4a2e','#355c35', p=>set(1,p));
+    loadPattern('assets/water_tile.jpg',  '#1d4d7a','#2b6aa5', p=>set(2,p));
+    loadPattern('assets/rock_tile.jpg',   '#555555','#6e6e6e', p=>set(3,p));
   }
 
-  // --- Tilemap data + helpers ---
+  // --- Tilemap ---
   let tilemap; // Uint8Array length GRID_W*GRID_H
   function idx(cx,cy){ return cy*GRID_W + cx; }
   function inBounds(cx,cy){ return cx>=0 && cy>=0 && cx<GRID_W && cy<GRID_H; }
   function terrainAt(x,y){
     const cx = Math.floor(x / TILE_SIZE), cy = Math.floor(y / TILE_SIZE);
-    if(!inBounds(cx,cy)) return TILE.ROCK; // treat out-of-bounds as impassable
+    if(!inBounds(cx,cy)) return 3;
     return tilemap[idx(cx,cy)];
   }
 
   function carveRiverAndBridges(){
-    // Sinusoidal horizontal river across the map center
     const midY = Math.floor(GRID_H*0.5);
-    const thickness = 3; // cells half-thickness
-    const waveAmp = 5;   // cells
+    const thickness = 3;
+    const waveAmp = 5;
     for(let cx=0; cx<GRID_W; cx++){
       const offset = Math.round(Math.sin(cx/6)*waveAmp);
       const cyCenter = midY + offset;
       for(let dy=-thickness; dy<=thickness; dy++){
         const cy = cyCenter + dy;
-        if(inBounds(cx,cy)) tilemap[idx(cx,cy)] = TILE.WATER;
+        if(inBounds(cx,cy)) tilemap[idx(cx,cy)] = 2; // WATER
       }
     }
-    // Add a few bridges (convert a vertical strip of water back to plain)
-    const bridges = [8, 22, 36, 44]; // grid x positions
+    const bridges = [8, 22, 36, 44];
     for(const bx of bridges){
       for(let by=0; by<GRID_H; by++){
-        // 2-cell wide bridge
-        if(inBounds(bx,by)) tilemap[idx(bx,by)] = TILE.PLAIN;
-        if(inBounds(bx+1,by)) tilemap[idx(bx+1,by)] = TILE.PLAIN;
+        if(inBounds(bx,by)) tilemap[idx(bx,by)] = 0;
+        if(inBounds(bx+1,by)) tilemap[idx(bx+1,by)] = 0;
       }
     }
   }
@@ -370,28 +362,27 @@
           if(!inBounds(cx,cy)) continue;
           const dx=cx-cx0, dy=cy-cy0;
           if(dx*dx+dy*dy <= r*r){
-            // Don't overwrite river water with rock/forest unless we want islands; keep water intact
-            if(tilemap[idx(cx,cy)]!==TILE.WATER) tilemap[idx(cx,cy)] = type;
+            if(tilemap[idx(cx,cy)]!==2) tilemap[idx(cx,cy)] = type;
           }
         }
       }
     }
   }
 
-  // Keep decorative trees list for visuals (denser in FOREST tiles)
+  // Decorative trees
   function populateTrees(){
     world.trees.length = 0;
     const treesPerCell = 0.8;
     for(let cy=0; cy<GRID_H; cy++){
       for(let cx=0; cx<GRID_W; cx++){
         const t = tilemap[idx(cx,cy)];
-        if(t===TILE.FOREST || t===TILE.PLAIN){
-          const k = (t===TILE.FOREST ? 2.0 : 0.4);
+        if(t===1 || t===0){
+          const k = (t===1 ? 2.0 : 0.4);
           const count = Math.floor(treesPerCell * k);
           for(let i=0;i<count;i++){
             const x = cx*TILE_SIZE + Math.random()*TILE_SIZE;
             const y = cy*TILE_SIZE + Math.random()*TILE_SIZE;
-            const r = (t===TILE.FOREST? 9+Math.random()*11 : 6+Math.random()*6);
+            const r = (t===1? 9+Math.random()*11 : 6+Math.random()*6);
             world.trees.push({x,y,r});
           }
         }
@@ -416,39 +407,39 @@
     };
 
     // Build tilemap
-    tilemap = new Uint8Array(GRID_W*GRID_H).fill(TILE.PLAIN);
-    carveRiverAndBridges();            // WATER + bridges
-    addBlobs(TILE.FOREST, 18, 3, 6);   // forest patches
-    addBlobs(TILE.ROCK,   12, 2, 4);   // rocky patches
+    tilemap = new Uint8Array(GRID_W*GRID_H).fill(0); // PLAIN
+    carveRiverAndBridges();
+    addBlobs(1, 18, 3, 6);   // FOREST
+    addBlobs(3, 12, 2, 4);   // ROCK
     populateTrees();
 
-    // Player barracks (on safe grass)
+    // Player barracks
     world.buildings.push({
       type:BUILDING_TYPES.BARRACKS, f:F.PLAYER, x:120, y:MAP_H-130, w:70, h:46,
       hp:260, max:260, queue:[], current:null, timeLeft:0
     });
 
-    // Player squad near base
+    // Player squad
     for(let i=0;i<6;i++){ const u=spawn(220+(i%3)*22,MAP_H-120+Math.floor(i/3)*26,F.PLAYER,'rifleman'); u.selected=true; world.selection.add(u); }
     for(let i=0;i<2;i++){ const u=spawn(300+(i*22),MAP_H-120,F.PLAYER,'grenadier'); u.selected=true; world.selection.add(u); }
     updateSelectionHUD();
 
-    // Enemies across river and north
+    // Enemies
     for(let i=0;i<8;i++) spawn(1800+(i%4)*26,320+Math.floor(i/4)*26,F.ENEMY,'rifleman');
     for(let i=0;i<3;i++) spawn(1950+(i*26),420,F.ENEMY,'grenadier');
     for(let i=0;i<6;i++) spawn(2100+(i%3)*26,900+Math.floor(i/3)*26,F.ENEMY,'rifleman');
 
-    // Start camera near player base (center on it)
+    // Start camera near base
     centerCamera(260, MAP_H-120);
 
-    // Reveal initial area around starting units
+    // Initial reveal
     for(const u of world.units){ if(u.f===F.PLAYER) revealAround(u.x,u.y); }
   }
 
   function spawn(x,y,f,unitType='rifleman'){
     const base = {
       rifleman:  {hp:48,max:48,range:115,dmg:9,  s:1.7},
-      grenadier: {hp:60,max:60,range:220,dmg:25, s:1.4} // long-range lobber
+      grenadier: {hp:60,max:60,range:220,dmg:25, s:1.4}
     }[unitType];
     const u={
       id:Math.random().toString(36).slice(2),
@@ -490,10 +481,10 @@
       dragStartScreen = { x: e.clientX, y: e.clientY };
       dragStartCam = { x: cam.x, y: cam.y };
       canvas.style.cursor = 'grabbing';
-      world.selBox = null; // prevent selection box while panning
+      world.selBox = null;
       return;
     }
-    // ---- selection start ----
+    // selection start
     canvas.setPointerCapture(e.pointerId);
     const p=screenToWorld(...Object.values(pos(e)));
     pointer.x=p.x; pointer.y=p.y; pointer.down=true; pointer.dragStart={x:p.x,y:p.y}; pointer.dragging=false;
@@ -536,6 +527,8 @@
       canvas.style.cursor = 'grab';
       return;
     }
+    if (e.button !== 0) return; // only react to left-click
+
     const p=screenToWorld(...Object.values(pos(e))); pointer.down=false;
     const hasSel = world.selection.size>0;
     if(pointer.dragging && world.selBox){
@@ -555,7 +548,7 @@
         friendly.selected=true; world.selection.add(friendly);
         updateSelectionHUD();
       }
-      else if(hasSel){ // ground move -> formation
+      else if(hasSel){
         assignFormationMove([...world.selection], p.x, p.y);
         flashOrder('Move');
         addClickFx(p.x,p.y,'#27e36a');
@@ -564,17 +557,19 @@
     world.selBox=null; pointer.dragStart=null; pointer.dragging=false;
   }, { capture: true });
 
-  // Optional: Mouse wheel for vertical pan
+  // Mouse wheel vertical pan
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
     const delta = Math.sign(e.deltaY) * 80;
     panBy(0, delta);
   }, { passive: false });
 
-  // Prevent context menu
   canvas.addEventListener('contextmenu', e=>e.preventDefault(), {passive:false});
 
-  function addClickFx(x,y,color){ world.clickFx.push({x,y,color,age:0,life:0.5}); }
+  function addClickFx(x,y,color){
+    world.clickFx.push({x,y,color,age:0,life:0.5});
+    while (world.clickFx.length > 12) world.clickFx.shift(); // cap effects
+  }
   function pos(e){ const r=canvas.getBoundingClientRect(); return {x:(e.clientX-r.left), y:(e.clientY-r.top)}; }
 
   // --- Buttons / Build Queue ---
@@ -609,7 +604,7 @@
   function circleInRect(cx,cy,r,rect){ const rx=clamp(cx,rect.x,rect.x+rect.w), ry=clamp(cy,rect.y,rect.y+rect.h);
     return (cx-r<=rect.x+rect.w && cx+r>=rect.x && cy-r<=rect.y+rect.h && cy+r>=rect.y && ((cx-rx)**2+(cy-ry)**2)<=r*r); }
 
-  // LOS blockers: trees + terrain (FOREST/ROCK). Rifles only use this.
+  // LOS blockers for rifles (trees + forest/rock tiles)
   function blockedByTerrain(ax,ay,bx,by){
     const steps = Math.ceil(Math.hypot(bx-ax, by-ay) / 12);
     for(let i=1;i<steps;i++){
@@ -617,7 +612,7 @@
       const x = ax + (bx-ax)*t;
       const y = ay + (by-ay)*t;
       const tt = terrainAt(x,y);
-      if(tt===TILE.FOREST || tt===TILE.ROCK) return true;
+      if(tt===1 || tt===3) return true;
     }
     return false;
   }
@@ -630,19 +625,18 @@
   }
   function rifleBlocked(ax,ay,bx,by){ return blockedByTerrain(ax,ay,bx,by) || blockedByTrees(ax,ay,bx,by); }
 
-  // --- Fog of War (permanent reveal) ---
-  function revealAround(x,y){
+  // --- Fog of War: solid reveal (no banding) ---
+  function revealAround(x, y){
     fogCtx.save();
     fogCtx.globalCompositeOperation = 'destination-out';
-    const g = fogCtx.createRadialGradient(x,y,0,x,y,VISION_RADIUS);
-    g.addColorStop(0,'rgba(0,0,0,0.9)');
-    g.addColorStop(1,'rgba(0,0,0,0)');
-    fogCtx.fillStyle = g;
-    fogCtx.beginPath(); fogCtx.arc(x,y,VISION_RADIUS,0,Math.PI*2); fogCtx.fill();
+    fogCtx.beginPath();
+    fogCtx.arc(x, y, VISION_RADIUS, 0, Math.PI * 2);
+    fogCtx.fillStyle = '#fff';
+    fogCtx.fill();
     fogCtx.restore();
   }
 
-  // --- Reactive fire (nearby allies assist) ---
+  // --- Reactive fire ---
   function reactToAttack(victim, attacker){
     if(!attacker || victim.hp<=0) return;
     victim.target = attacker;
@@ -725,7 +719,7 @@
 
     if(world.tAccum>=2){ world.resources.credits+=10; world.tAccum=0; }
 
-    // Cooldowns + walk anim + reveal around player units
+    // Cooldowns + walk anim + reveal
     for(const u of world.units){
       if(u.cd>0) u.cd-=dt;
       if(u.f===F.PLAYER && u.hp>0) revealAround(u.x,u.y);
@@ -772,12 +766,9 @@
 
       // Terrain collision / slow
       const ttype = terrainAt(u.x,u.y);
-      if(ttype===TILE.WATER || ttype===TILE.ROCK){
-        // Nudge out by backing up slightly (prevents getting stuck if spawned on a bad tile)
-        u.x -= u.vx*60*dt; u.y -= u.vy*60*dt;
-        u.vx = u.vy = 0;
+      if(ttype===2 || ttype===3){ // water/rock
+        u.x -= u.vx*60*dt; u.y -= u.vy*60*dt; u.vx = u.vy = 0;
       }
-      // tree push-out (decorative but adds soft collision)
       for(const tr of world.trees){
         const dx=u.x-tr.x, dy=u.y-tr.y, d=Math.hypot(dx,dy);
         if(d<tr.r+u.r){ const push=(tr.r+u.r-d)+0.1, nx=dx/(d||1), ny=dy/(d||1); u.x+=nx*push; u.y+=ny*push; }
@@ -859,12 +850,11 @@
     // movement speed modifier by terrain at NEXT position
     const nx = u.x + vx*60*dt, ny = u.y + vy*60*dt;
     const ttype = terrainAt(nx,ny);
-    if(ttype===TILE.WATER || ttype===TILE.ROCK){
-      // Try a simple sidestep to skirt the obstacle
-      const side = Math.random()<.5?Math.PI/2:-Math.PI/2;
+    if(ttype===2 || ttype===3){
+      const side=Math.random()<.5?Math.PI/2:-Math.PI/2;
       vx=Math.cos(ang+side)*sp*.85; vy=Math.sin(ang+side)*sp*.85;
-    } else if(ttype===TILE.FOREST){
-      vx *= 0.75; vy *= 0.75; // slow in forest
+    } else if(ttype===1){
+      vx *= 0.75; vy *= 0.75;
     }
 
     // sidestep trees (soft)
@@ -905,26 +895,23 @@
     }
   }
 
-  // --- Drawing helpers (camera-aware) ---
+  // --- Drawing helpers ---
   function drawTileLayer(){
-    // Fill each visible cell with its pattern, aligned to world origin
+    // visible grid cells
     const startCX = Math.max(0, Math.floor(cam.x / TILE_SIZE));
-    const endCX   = Math.min(GRID_W-1, Math.floor((cam.x+VIEW_W)/TILE_SIZE));
+    const endCX   = Math.min(GRID_W - 1, Math.floor((cam.x + VIEW_W) / TILE_SIZE));
     const startCY = Math.max(0, Math.floor(cam.y / TILE_SIZE));
-    const endCY   = Math.min(GRID_H-1, Math.floor((cam.y+VIEW_H)/TILE_SIZE));
+    const endCY   = Math.min(GRID_H - 1, Math.floor((cam.y + VIEW_H) / TILE_SIZE));
 
-    // For pattern alignment, draw with a translation so pattern anchors to 0,0 world
     ctx.save();
-    ctx.translate(- (cam.x % 256), - (cam.y % 256));
+    // anchor once: draw in world coords, translated by camera
+    ctx.translate(-cam.x, -cam.y);
 
     for(let cy=startCY; cy<=endCY; cy++){
       for(let cx=startCX; cx<=endCX; cx++){
         const t = tilemap[idx(cx,cy)];
-        const pat = patterns[t] || patterns[TILE.PLAIN];
-        ctx.fillStyle = pat;
-        const sx = cx*TILE_SIZE - cam.x % 256;
-        const sy = cy*TILE_SIZE - cam.y % 256;
-        ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
+        ctx.fillStyle = patterns[t] || patterns[0];
+        ctx.fillRect(cx * TILE_SIZE, cy * TILE_SIZE, TILE_SIZE, TILE_SIZE);
       }
     }
     ctx.restore();
@@ -934,10 +921,8 @@
     for(const t of world.trees){
       const s=worldToScreen(t.x,t.y);
       if(s.x<-t.r-4||s.y<-t.r-4||s.x>VIEW_W+t.r+4||s.y>VIEW_H+t.r+4) continue;
-      // only draw trees if that tile is not water/rock
       const tt = terrainAt(t.x,t.y);
-      if(tt===TILE.WATER || tt===TILE.ROCK) continue;
-
+      if(tt===2 || tt===3) continue;
       ctx.fillStyle='rgba(0,0,0,.35)'; ctx.beginPath(); ctx.arc(s.x+2,s.y+2,t.r,0,Math.PI*2); ctx.fill();
       const grad=ctx.createRadialGradient(s.x-2,s.y-2,2,s.x,s.y,t.r);
       grad.addColorStop(0,'#3f7a3f'); grad.addColorStop(1,'#235a29');
@@ -962,11 +947,9 @@
     ctx.fillStyle = isPlayer ? '#3bd1ff' : '#ff6666';
     ctx.fillRect(x+6,y-8,2,8); ctx.beginPath(); ctx.moveTo(x+8,y-8); ctx.lineTo(x+22,y-3); ctx.lineTo(x+8,y+2); ctx.closePath(); ctx.fill();
 
-    // HP bar
     ctx.fillStyle='#0e121d'; ctx.fillRect(x,y-10,w,4);
     ctx.fillStyle='#36d399'; ctx.fillRect(x,y-10,w*(b.hp/b.max),4);
 
-    // Production
     if(b.current){
       const total = b.current.time; const prog = Math.max(0,1 - b.timeLeft/total);
       ctx.fillStyle='#36d399'; ctx.fillRect(x,y-16,w*prog,4);
@@ -988,7 +971,7 @@
 
   function drawBuildings(){ for(const b of world.buildings){ drawBarracks(b); } }
 
-  // Animated soldier (camera-aware)
+  // Animated soldier
   function drawSoldier(u){
     const s=worldToScreen(u.x,u.y);
     if(s.x<-30||s.y<-30||s.x>VIEW_W+30||s.y>VIEW_H+30) return;
@@ -1016,7 +999,6 @@
     if(u.selected){ ctx.strokeStyle='#d7f5ff'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(0,0,u.r+3,0,Math.PI*2); ctx.stroke(); }
     ctx.restore();
 
-    // HP bar
     ctx.fillStyle='#0e121d'; ctx.fillRect(s.x-10,s.y-16,20,4);
     ctx.fillStyle='#36d399'; ctx.fillRect(s.x-10,s.y-16,20*(u.hp/u.max),4);
   }
@@ -1057,7 +1039,7 @@
     }
   }
 
-  // --- Selection HUD ---
+  // Selection HUD
   function updateSelectionHUD(){
     const arr = [...world.selection].filter(u=>u.hp>0);
     selCountEl.textContent = arr.length.toString();
@@ -1079,29 +1061,26 @@
     orderFlashTimer = setTimeout(()=>orderFlash.classList.remove('show'), 700);
   }
 
-  // --- Fog draw (overlay current viewport) ---
+  // Fog overlay on current viewport
   function drawFog(){ ctx.drawImage(fogCanvas, cam.x, cam.y, VIEW_W, VIEW_H, 0, 0, VIEW_W, VIEW_H); }
 
-  // --- Minimap draw ---
+  // Minimap draw
   function drawMinimap(){
-    // Base = downsampled fog (dark shows unexplored)
     mctx.fillStyle = '#203046'; mctx.fillRect(0,0,MINI_W,MINI_H);
 
-    // Draw terrain colors lightly under the fog preview
     for(let cy=0; cy<GRID_H; cy++){
       for(let cx=0; cx<GRID_W; cx++){
         const t = tilemap[idx(cx,cy)];
         let col = '#3a5f2f';
-        if(t===TILE.FOREST) col='#2c4a2e';
-        else if(t===TILE.WATER) col='#1d4d7a';
-        else if(t===TILE.ROCK) col='#555555';
+        if(t===1) col='#2c4a2e';
+        else if(t===2) col='#1d4d7a';
+        else if(t===3) col='#555555';
         mctx.fillStyle = col;
         mctx.fillRect(Math.floor(cx*TILE_SIZE*mScaleX), Math.floor(cy*TILE_SIZE*mScaleY),
                       Math.ceil(TILE_SIZE*mScaleX), Math.ceil(TILE_SIZE*mScaleY));
       }
     }
 
-    // Fog overlay
     try{
       const temp = document.createElement('canvas'); temp.width=MINI_W; temp.height=MINI_H;
       const tctx=temp.getContext('2d');
@@ -1111,24 +1090,21 @@
       mctx.globalAlpha = 1;
     }catch(_e){}
 
-    // Camera rect
     mctx.strokeStyle = '#8ab4ff'; mctx.lineWidth = 1;
     mctx.strokeRect(cam.x*mScaleX, cam.y*mScaleY, VIEW_W*mScaleX, VIEW_H*mScaleY);
 
-    // Units
     for(const u of world.units){
       mctx.fillStyle = (u.f===F.PLAYER)?'#3bd1ff':'#ff6666';
       mctx.fillRect((u.x*mScaleX)|0, (u.y*mScaleY)|0, 2, 2);
     }
   }
 
-  // --- Render ---
+  // Render
   function draw(){
     drawTileLayer();
     drawTrees();
     drawBuildings();
 
-    // Units: enemy only visible if within vision of any player unit
     for(const u of world.units){
       if(u.f===F.PLAYER) { drawSoldier(u); }
       else {
@@ -1144,16 +1120,13 @@
     drawBulletsExplosions();
     drawClickFx();
 
-    // Selection box (camera aware)
     if(world.selBox){ 
       const s=world.selBox; const a=worldToScreen(s.x,s.y);
       ctx.setLineDash([6,4]); ctx.strokeStyle='#8ab4ff'; ctx.strokeRect(a.x, a.y, s.w, s.h); ctx.setLineDash([]); 
     }
 
-    // Fog overlay LAST
     drawFog();
 
-    // HUD text
     ctx.fillStyle='#ffffff'; ctx.font='bold 14px system-ui';
     const p=world.units.filter(u=>u.f===F.PLAYER).length, e=world.units.filter(u=>u.f===F.ENEMY).length;
     ctx.fillText(`Credits: ${world.resources.credits}  |  Troops: ${p}  |  Hostiles: ${e}`,10,20);
@@ -1167,11 +1140,10 @@
       }
     }
 
-    // Minimap
     drawMinimap();
   }
 
-  // --- Loop & end ---
+  // Loop & end
   let last=performance.now();
   function loop(now){
     if(world.ended) return;
@@ -1185,19 +1157,17 @@
     statsEl.textContent=`Time: ${sec}s • Lost: ${world.stats.lost} • Kills: ${world.stats.kills}`;
   }
 
-  // Drag/drop + button to set a big baked terrain image (optional override)
+  // Drag/drop + button terrain override
   terrainBtn.onclick = () => terrainFile.click();
   terrainFile.onchange = (e)=>{
     const file = e.target.files?.[0]; if(!file) return;
     const img = new Image(); img.onload = ()=>{
-      // Build a big tiled canvas from the image, full MAP size
       const tc=document.createElement('canvas'); tc.width=MAP_W; tc.height=MAP_H;
       const tctx=tc.getContext('2d');
       const pat = tctx.createPattern(img,'repeat');
       if(pat){ tctx.fillStyle=pat; tctx.fillRect(0,0,MAP_W,MAP_H); }
       else { tctx.drawImage(img, 0,0,MAP_W,MAP_H); }
-      // Replace grass pattern with this baked texture
-      patterns[TILE.PLAIN] = ctx.createPattern(tc, 'no-repeat');
+      patterns[0] = ctx.createPattern(tc, 'no-repeat');
     };
     img.src = URL.createObjectURL(file);
   };
@@ -1211,12 +1181,11 @@
       const pat = tctx.createPattern(img,'repeat');
       if(pat){ tctx.fillStyle=pat; tctx.fillRect(0,0,MAP_W,MAP_H); }
       else { tctx.drawImage(img, 0,0,MAP_W,MAP_H); }
-      patterns[TILE.PLAIN] = ctx.createPattern(tc, 'no-repeat');
+      patterns[0] = ctx.createPattern(tc, 'no-repeat');
     };
     img.src = URL.createObjectURL(file);
   });
 
-  // Load tile patterns, then start
   loadAllPatterns(()=>{ reset(); requestAnimationFrame(loop); });
 })();
 </script>

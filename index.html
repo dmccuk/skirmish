@@ -197,8 +197,8 @@
         const y = Math.floor(u.y);
         
         // Mark area as revealed
-        for(let dx = -visionRadius; dx <= visionRadius; dx += 4){
-          for(let dy = -visionRadius; dy <= visionRadius; dy += 4){
+        for(let dx = -visionRadius; dx <= visionRadius; dx += 2){
+          for(let dy = -visionRadius; dy <= visionRadius; dy += 2){
             if(dx*dx + dy*dy <= visionRadius*visionRadius){
               const key = `${x+dx},${y+dy}`;
               world.revealed.add(key);
@@ -444,18 +444,18 @@
 
   // -------- Rendering --------
   function draw(){
-    // Base terrain with very vibrant color
-    ctx.fillStyle='#5d9b5d'; ctx.fillRect(0,0,W,H);
+    // Base terrain with very vibrant green color
+    ctx.fillStyle='#6dab6d'; ctx.fillRect(0,0,W,H);
     
     // Add some brown dirt patches
     for(let i=0;i<20;i++){
       const x=Math.random()*W, y=Math.random()*H, r=40+Math.random()*60;
-      ctx.fillStyle='#9b7d5a';
+      ctx.fillStyle='#ab8d6a';
       ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
     }
     
-    // Add grass patches
-    for(const g of world.grass){ ctx.fillStyle=`rgba(72,110,60,${g.a})`; ctx.beginPath(); ctx.arc(g.x,g.y,g.r,0,Math.PI*2); ctx.fill(); }
+    // Add grass patches - more vibrant
+    for(const g of world.grass){ ctx.fillStyle=`rgba(82,130,70,${g.a*1.5})`; ctx.beginPath(); ctx.arc(g.x,g.y,g.r,0,Math.PI*2); ctx.fill(); }
     
     // Add terrain features (dirt and rock patches)
     for(const t of world.terrain){
@@ -502,15 +502,15 @@
         ctx.fillStyle='#36d399'; ctx.fillRect(b.x, b.y-12, b.w*(b.hp/b.max), 4);
       }
     }
-    // fog of war - simple dark overlay for unrevealed areas
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    // fog of war - draw black fog everywhere, then clear revealed areas
+    ctx.fillStyle = 'rgba(0,0,0,0.8)';
     ctx.fillRect(0, 0, W, H);
     
-    // Clear fog in revealed areas
+    // Clear fog in revealed areas to show the terrain underneath
     ctx.globalCompositeOperation = 'destination-out';
     for(const key of world.revealed){
       const [x, y] = key.split(',').map(Number);
-      ctx.fillRect(x, y, 10, 10);
+      ctx.fillRect(x, y, 4, 4);
     }
     ctx.globalCompositeOperation = 'source-over';
     

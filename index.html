@@ -18,6 +18,9 @@
     #btns{display:flex;gap:8px}
     input[type=file]{display:none}
     .spacer{flex:1 1 0}
+    /* Audio controls */
+    #audioControls{display:flex;gap:6px;align-items:center}
+    #volumeSlider{width:80px}
   </style>
 </head>
 <body>
@@ -32,6 +35,10 @@
       <input id="terrainFile" type="file" accept="image/*" />
     </div>
     <div class="spacer"></div>
+    <div id="audioControls">
+      <button id="muteBtn">🔊</button>
+      <input id="volumeSlider" type="range" min="0" max="1" step="0.05" value="0.25" />
+    </div>
     <div class="pill"><b>Army Skirmish</b> — tap ground to move (green), tap enemy to attack (red)</div>
     <div class="pill">Drag to box-select • Fog of war • Trees block LoS • Reactive fire + squad assist</div>
   </div>
@@ -59,20 +66,32 @@
   const btnBuildGrenadier=document.getElementById('buildGrenadier');
   const terrainBtn=document.getElementById('terrainBtn');
   const terrainFile=document.getElementById('terrainFile');
+  const muteBtn=document.getElementById('muteBtn');
+  const volumeSlider=document.getElementById('volumeSlider');
   const canvas=ctx.canvas;
 
   // --- Audio ---
   const bgm = new Audio('assets/skirmish1.mp3');
   bgm.loop = true;
-  bgm.volume = 0.25; // low background volume
+  bgm.volume = parseFloat(volumeSlider.value); // low background volume
+
+  const deathSoundBase = new Audio('assets/death.mp3'); // use cry.mp3 if you prefer
+  deathSoundBase.volume = 0.6;
+
+  // Start BGM (autoplay may be blocked)
   bgm.play().catch(() => {
-    // Autoplay may be blocked; start on first user interaction
     const start = () => { bgm.play().catch(()=>{}); document.removeEventListener('pointerdown', start); };
     document.addEventListener('pointerdown', start, { once: true });
   });
 
-  const deathSoundBase = new Audio('assets/death.mp3');
-  deathSoundBase.volume = 0.6;
+  // Audio controls
+  muteBtn.onclick = () => {
+    bgm.muted = !bgm.muted;
+    muteBtn.textContent = bgm.muted ? "🔇" : "🔊";
+  };
+  volumeSlider.oninput = (e) => {
+    bgm.volume = parseFloat(e.target.value);
+  };
 
   // --- Custom cursors (SVG data URIs) ---
   const greenTarget = makeCursor('#27e36a');
@@ -107,7 +126,7 @@
       fogRevealed:new Set(), resources:{credits:500},
       terrainImg:null, clickFx:[],
       grass: Array.from({length:140},()=>({x:Math.random()*W,y:Math.random()*H,r:30+Math.random()*70,a:0.06+Math.random()*0.09})),
-      terrain: Array.from({length:22},()=>({x:Math.random()*W,y:Math.random()*H,r:20+Math.random()*40,color:Math.random()<.5?'#4a3d2a':'#6a6a6a'})),
+      terrain: Array.from({length:22},()=>({x:Math.random()*W,y:Math.random()*H,r:20+Math.random()*40,color:Math.random()<.5?'#4a3d2a':'#6b6b6b'})),
     };
 
     // Forests

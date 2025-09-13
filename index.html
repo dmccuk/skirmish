@@ -170,11 +170,11 @@
 (() => {
   // -------- Viewport & World sizes --------
   const VIEW_W=960, VIEW_H=600; // canvas size
-  const MAP_W=2400, MAP_H=1600; // LARGE map
+  const MAP_W=2400, MAP_H=1600; // large map
   const ctx=document.getElementById('c').getContext('2d');
   ctx.canvas.width = VIEW_W; ctx.canvas.height = VIEW_H;
 
-  // Camera (top-left of viewport in world coords)
+  // Camera
   const cam = { x: 0, y: 0 };
 
   // Minimap
@@ -234,30 +234,41 @@
   // -------- World / Tilemap --------
   const F={PLAYER:1,ENEMY:2};
   const BUILDING_TYPES = {BARRACKS:'barracks'};
-  const VISION_RADIUS=100; // FoW reveal radius
+  const VISION_RADIUS=100; // Fog reveal radius
   const SEP_RADIUS = 18, SEP_FORCE = 65;
 
   // Tile constants
   const TILE = { PLAIN:0, FOREST:1, WATER:2, ROCK:3 };
-  const TILE_SIZE = 50; // grid cell size
-  const GRID_W = MAP_W / TILE_SIZE; // 48
-  const GRID_H = MAP_H / TILE_SIZE; // 32
+  const TILE_SIZE = 50;
+  const GRID_W = MAP_W / TILE_SIZE;
+  const GRID_H = MAP_H / TILE_SIZE;
+
+  // --- DENSITY TUNING (reduce clutter) ---
+  const DENSITY = {
+    forestBlobs: 7,      // fewer forests (was 18)
+    rockBlobs:   4,      // fewer rock fields (was 12)
+    riverThickness: 2,   // thinner river (was 3)
+    riverWaveAmp:  3,    // gentler wiggle (was 5)
+    treesPerCell:  0.28, // global tree base density (was 0.8)
+    forestTreeMult:1.2,  // multiplier inside forest (was 2.0)
+    grassTreeMult: 0.15  // multiplier on grass (was 0.4)
+  };
 
   let world;
 
-  // Offscreen fog canvas (full map)
+  // Offscreen fog canvas
   const fogCanvas = document.createElement('canvas');
   fogCanvas.width = MAP_W; fogCanvas.height = MAP_H;
   const fogCtx = fogCanvas.getContext('2d');
 
   // --- Camera panning state ---
-  const PAN_SPEED = 520;        // px/sec (keyboard)
-  const PAN_SPEED_FAST = 980;   // px/sec when Shift is held
-  const EDGE_BAND = 18;         // px from canvas edge to trigger edge-scroll
+  const PAN_SPEED = 520;
+  const PAN_SPEED_FAST = 980;
+  const EDGE_BAND = 18;
   let keys = new Set();
-  let isPanningDrag = false;    // space+drag or middle-mouse drag
-  let dragStartScreen = null;   // screen coords
-  let dragStartCam = null;      // camera snapshot at drag begin
+  let isPanningDrag = false;
+  let dragStartScreen = null;
+  let dragStartCam = null;
 
   function panBy(dx, dy) {
     cam.x = Math.max(0, Math.min(cam.x + dx, MAP_W - VIEW_W));
@@ -321,7 +332,7 @@
     loadPattern('assets/rock_tile.jpg',   '#555555','#6e6e6e', p=>set(3,p));
   }
 
-  // --- Tilemap ---
+  // --- Tilemap helpers ---
   let tilemap; // Uint8Array length GRID_W*GRID_H
   function idx(cx,cy){ return cy*GRID_W + cx; }
   function inBounds(cx,cy){ return cx>=0 && cy>=0 && cx<GRID_W && cy<GRID_H; }
@@ -331,10 +342,12 @@
     return tilemap[idx(cx,cy)];
   }
 
+  // River thinner & with smaller wave
   function carveRiverAndBridges(){
     const midY = Math.floor(GRID_H*0.5);
-    const thickness = 3;
-    const waveAmp = 5;
+    const thickness = DENSITY.riverThickness;
+    const waveAmp   = DENSITY.riverWaveAmp;
+
     for(let cx=0; cx<GRID_W; cx++){
       const offset = Math.round(Math.sin(cx/6)*waveAmp);
       const cyCenter = midY + offset;
@@ -343,11 +356,31 @@
         if(inBounds(cx,cy)) tilemap[idx(cx,cy)] = 2; // WATER
       }
     }
-    const bridges = [8, 22, 36, 44];
+    const bridges = [10, 24, 38, 46];
     for(const bx of bridges){
       for(let by=0; by<GRID_H; by++){
-        if(inBounds(bx,by)) tilemap[idx(bx,by)] = 0;
+        if(inBounds(bx,by))   tilemap[idx(bx,by)]   = 0;
         if(inBounds(bx+1,by)) tilemap[idx(bx+1,by)] = 0;
+      }
+    }
+  }
+
+  // Carve open lanes for movement (one horizontal, one vertical)
+  function carveLanes(){
+    // Horizontal lane
+    const y1 = Math.floor(GRID_H*0.62);
+    for(let cx=0; cx<GRID_W; cx++){
+      for(let k=-2;k<=2;k++){
+        const cy = y1 + k;
+        if(inBounds(cx,cy) && tilemap[idx(cx,cy)]!==2) tilemap[idx(cx,cy)] = 0;
+      }
+    }
+    // Vertical lane
+    const x1 = Math.floor(GRID_W*0.45);
+    for(let cy=0; cy<GRID_H; cy++){
+      for(let k=-2;k<=2;k++){
+        const cx = x1 + k;
+        if(inBounds(cx,cy) && tilemap[idx(cx,cy)]!==2) tilemap[idx(cx,cy)] = 0;
       }
     }
   }
@@ -369,22 +402,23 @@
     }
   }
 
-  // Decorative trees
+  // Decorative trees — much lighter
   function populateTrees(){
     world.trees.length = 0;
-    const treesPerCell = 0.8;
+    const base = DENSITY.treesPerCell;
     for(let cy=0; cy<GRID_H; cy++){
       for(let cx=0; cx<GRID_W; cx++){
         const t = tilemap[idx(cx,cy)];
-        if(t===1 || t===0){
-          const k = (t===1 ? 2.0 : 0.4);
-          const count = Math.floor(treesPerCell * k);
-          for(let i=0;i<count;i++){
-            const x = cx*TILE_SIZE + Math.random()*TILE_SIZE;
-            const y = cy*TILE_SIZE + Math.random()*TILE_SIZE;
-            const r = (t===1? 9+Math.random()*11 : 6+Math.random()*6);
-            world.trees.push({x,y,r});
-          }
+        let k = 0;
+        if(t===1) k = DENSITY.forestTreeMult;   // denser in forest
+        else if(t===0) k = DENSITY.grassTreeMult;
+
+        const count = Math.floor(base * k);
+        for(let i=0;i<count;i++){
+          const x = cx*TILE_SIZE + Math.random()*TILE_SIZE;
+          const y = cy*TILE_SIZE + Math.random()*TILE_SIZE;
+          const r = (t===1? 8+Math.random()*9 : 5+Math.random()*5);
+          world.trees.push({x,y,r});
         }
       }
     }
@@ -392,7 +426,7 @@
 
   // --- World reset ---
   function reset(){
-    // init fog (completely black)
+    // init fog (black)
     fogCtx.globalCompositeOperation = 'source-over';
     fogCtx.fillStyle = 'rgba(0,0,0,1)';
     fogCtx.fillRect(0,0,MAP_W,MAP_H);
@@ -406,11 +440,12 @@
       clickFx:[]
     };
 
-    // Build tilemap
+    // Build tilemap with lower density
     tilemap = new Uint8Array(GRID_W*GRID_H).fill(0); // PLAIN
     carveRiverAndBridges();
-    addBlobs(1, 18, 3, 6);   // FOREST
-    addBlobs(3, 12, 2, 4);   // ROCK
+    addBlobs(1, DENSITY.forestBlobs, 3, 5); // FOREST fewer
+    addBlobs(3, DENSITY.rockBlobs,   2, 3); // ROCK fewer
+    carveLanes();                            // open corridors
     populateTrees();
 
     // Player barracks
@@ -527,7 +562,7 @@
       canvas.style.cursor = 'grab';
       return;
     }
-    if (e.button !== 0) return; // only react to left-click
+    if (e.button !== 0) return; // only left click
 
     const p=screenToWorld(...Object.values(pos(e))); pointer.down=false;
     const hasSel = world.selection.size>0;
@@ -766,7 +801,7 @@
 
       // Terrain collision / slow
       const ttype = terrainAt(u.x,u.y);
-      if(ttype===2 || ttype===3){ // water/rock
+      if(ttype===2 || ttype===3){
         u.x -= u.vx*60*dt; u.y -= u.vy*60*dt; u.vx = u.vy = 0;
       }
       for(const tr of world.trees){
@@ -897,16 +932,13 @@
 
   // --- Drawing helpers ---
   function drawTileLayer(){
-    // visible grid cells
     const startCX = Math.max(0, Math.floor(cam.x / TILE_SIZE));
     const endCX   = Math.min(GRID_W - 1, Math.floor((cam.x + VIEW_W) / TILE_SIZE));
     const startCY = Math.max(0, Math.floor(cam.y / TILE_SIZE));
     const endCY   = Math.min(GRID_H - 1, Math.floor((cam.y + VIEW_H) / TILE_SIZE));
 
     ctx.save();
-    // anchor once: draw in world coords, translated by camera
     ctx.translate(-cam.x, -cam.y);
-
     for(let cy=startCY; cy<=endCY; cy++){
       for(let cx=startCX; cx<=endCX; cx++){
         const t = tilemap[idx(cx,cy)];

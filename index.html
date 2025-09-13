@@ -444,13 +444,13 @@
 
   // -------- Rendering --------
   function draw(){
-    // Base terrain with more vibrant color
-    ctx.fillStyle='#3d6b3d'; ctx.fillRect(0,0,W,H);
+    // Base terrain with very vibrant color
+    ctx.fillStyle='#4d8b4d'; ctx.fillRect(0,0,W,H);
     
     // Add some brown dirt patches
     for(let i=0;i<20;i++){
       const x=Math.random()*W, y=Math.random()*H, r=40+Math.random()*60;
-      ctx.fillStyle='#6b4d3a';
+      ctx.fillStyle='#8b6d4a';
       ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
     }
     
@@ -502,7 +502,19 @@
         ctx.fillStyle='#36d399'; ctx.fillRect(b.x, b.y-12, b.w*(b.hp/b.max), 4);
       }
     }
-    // units (player units always visible, enemy units only in revealed areas)
+    // fog of war - simplified approach to prevent flickering
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, W, H);
+    
+    // Clear fog in revealed areas
+    ctx.globalCompositeOperation = 'destination-out';
+    for(const key of world.revealed){
+      const [x, y] = key.split(',').map(Number);
+      ctx.fillRect(x, y, 6, 6);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    
+    // units (render AFTER fog of war so they're always visible)
     for(const u of world.units){
       if(u.f === F.PLAYER || isRevealed(u.x, u.y)){
         // Simple colored circles instead of complex sprites
@@ -535,25 +547,6 @@
         ctx.fillStyle='#36d399'; ctx.fillRect(u.x-10,u.y-16,20*(u.hp/u.max),4);
       }
     }
-    // fog of war - black overlay for unrevealed areas (but preserve player units)
-    ctx.fillStyle = 'rgba(0,0,0,0.8)';
-    ctx.fillRect(0, 0, W, H);
-    
-    // Clear fog in revealed areas AND around player units
-    ctx.globalCompositeOperation = 'destination-out';
-    for(const key of world.revealed){
-      const [x, y] = key.split(',').map(Number);
-      ctx.fillRect(x, y, 4, 4);
-    }
-    // Also clear fog around all player units so they're always visible
-    for(const u of world.units){
-      if(u.f === F.PLAYER && u.hp > 0){
-        ctx.beginPath();
-        ctx.arc(u.x, u.y, 20, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    ctx.globalCompositeOperation = 'source-over';
     
     // bullets
     for(const b of world.bullets){ ctx.fillStyle='#f8f1b8'; ctx.fillRect(b.x-2,b.y-2,4,4); }

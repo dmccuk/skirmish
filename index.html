@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>Army Skirmish — Touch RTS</title>
+  <title>Army Skirmish — Tilemap RTS</title>
   <style>
     html,body{height:100%;margin:0;background:#0b0e16;color:#e6e8ef;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
     #ui{position:fixed;left:0;right:0;top:0;padding:8px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
@@ -55,7 +55,7 @@
     }
     #helpCard{
       background:#0f1424;border:1px solid #1e2639;border-radius:16px;
-      padding:20px; max-width:680px; color:#e6e8ef;
+      padding:20px; max-width:760px; color:#e6e8ef;
       box-shadow:0 20px 50px rgba(0,0,0,.45)
     }
     #helpCard h2{margin:0 0 8px 0}
@@ -64,6 +64,9 @@
       padding:2px 6px;border-radius:6px;font-size:12px}
     #helpCard ul{margin:8px 0 0 18px}
     #helpBtn{font-weight:700}
+    .legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
+    .chip{display:inline-flex;align-items:center;gap:6px;background:#121827;border:1px solid #1e2639;border-radius:999px;padding:4px 8px;font-size:12px}
+    .box{width:14px;height:14px;border-radius:3px}
   </style>
 </head>
 <body>
@@ -84,7 +87,7 @@
       <input id="volumeSlider" type="range" min="0" max="1" step="0.05" value="0.25" />
     </div>
     <div class="pill"><b>Army Skirmish</b> — click ground to move (green), enemy to attack (red)</div>
-    <div class="pill">Large map • Minimap click-to-pan • Fog of War</div>
+    <div class="pill">Large map • Tile terrain • Fog of War</div>
   </div>
 
   <!-- Selection HUD -->
@@ -126,17 +129,25 @@
         <div>
           <h3>Units</h3>
           <ul>
-            <li><b>Rifleman</b>: mid-range direct fire.</li>
-            <li><b>Grenadier</b>: long-range lob (arcs over trees), splash damage.</li>
-            <li>Allies near a unit under fire will <b>assist</b> automatically.</li>
+            <li><b>Rifleman</b>: mid-range direct fire; line-of-sight blocked by trees/rocks.</li>
+            <li><b>Grenadier</b>: long-range lob (arcs over blockers), splash damage.</li>
+            <li>Nearby allies <b>assist automatically</b> when a unit is hit.</li>
           </ul>
         </div>
         <div>
-          <h3>Building</h3>
+          <h3>Terrain</h3>
           <ul>
-            <li>Use buttons to <b>queue</b> Riflemen/Grenadiers.</li>
-            <li>Credits tick in over time.</li>
+            <li><b>Grass</b>: normal speed.</li>
+            <li><b>Forest</b>: slower movement; blocks rifle LoS.</li>
+            <li><b>Water</b>: impassable except at bridges.</li>
+            <li><b>Rock</b>: impassable; blocks rifle LoS.</li>
           </ul>
+          <div class="legend">
+            <span class="chip"><span class="box" style="background:#3a5f2f"></span>Grass</span>
+            <span class="chip"><span class="box" style="background:#2c4a2e"></span>Forest</span>
+            <span class="chip"><span class="box" style="background:#1d4d7a"></span>Water</span>
+            <span class="chip"><span class="box" style="background:#555555"></span>Rock</span>
+          </div>
         </div>
       </div>
       <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
@@ -220,11 +231,17 @@
     return `url("data:image/svg+xml,${svg}") 16 16, crosshair`;
   }
 
-  // -------- World --------
+  // -------- World / Tilemap --------
   const F={PLAYER:1,ENEMY:2};
   const BUILDING_TYPES = {BARRACKS:'barracks'};
-  const VISION_RADIUS=100; // renamed to avoid collisions
+  const VISION_RADIUS=100; // FoW reveal radius
   const SEP_RADIUS = 18, SEP_FORCE = 65;
+
+  // Tile constants
+  const TILE = { PLAIN:0, FOREST:1, WATER:2, ROCK:3 };
+  const TILE_SIZE = 50; // grid cell size (MAP_W % TILE_SIZE == 0, MAP_H % TILE_SIZE == 0)
+  const GRID_W = MAP_W / TILE_SIZE; // 48
+  const GRID_H = MAP_H / TILE_SIZE; // 32
 
   let world;
 
@@ -262,8 +279,8 @@
     centerCamera(wx, wy);
   });
 
-  // Help modal (show on first load and on button)
-  const firstRunKey = 'skirmish_help_seen_v1';
+  // Help modal
+  const firstRunKey = 'skirmish_help_seen_v2';
   function showHelp(){ helpModal.style.display='flex'; }
   function hideHelp(){ helpModal.style.display='none'; localStorage.setItem(firstRunKey,'1'); }
   if(!localStorage.getItem(firstRunKey)) showHelp();
@@ -271,27 +288,118 @@
   helpClose.onclick = hideHelp;
   helpModal.addEventListener('click', (e)=>{ if(e.target===helpModal) hideHelp(); });
 
-  // Default ground tiling with graceful fallback
-  let groundPattern=null;
-  const groundImg = new Image();
-  groundImg.crossOrigin = "anonymous";
-  groundImg.onload = ()=>{ groundPattern = ctx.createPattern(groundImg,'repeat'); };
-  groundImg.onerror = ()=>{
-    // Fallback: generate a tiny canvas pattern so the game still looks ok
-    const tile = document.createElement('canvas');
-    tile.width = 64; tile.height = 64;
+  // --- Pattern loaders with fallbacks (for each tile type) ---
+  function makeFallbackPattern(colorA, colorB){
+    const tile = document.createElement('canvas'); tile.width=256; tile.height=256;
     const tctx = tile.getContext('2d');
-    tctx.fillStyle = '#3b5d2f'; tctx.fillRect(0,0,64,64);
-    tctx.fillStyle = '#466d38';
-    for (let y=0; y<64; y+=8){
-      for (let x= (y%16===0?0:8); x<64; x+=16){
-        tctx.fillRect(x, y, 8, 8);
+    tctx.fillStyle = colorA; tctx.fillRect(0,0,256,256);
+    tctx.fillStyle = colorB;
+    for (let y=0; y<256; y+=16){
+      for (let x=(y%32===0?0:8); x<256; x+=16) tctx.fillRect(x, y, 8, 8);
+    }
+    return tile;
+  }
+
+  const patterns = {
+    [TILE.PLAIN]: null,
+    [TILE.FOREST]: null,
+    [TILE.WATER]: null,
+    [TILE.ROCK]: null
+  };
+
+  function loadPattern(path, fallbackA, fallbackB, done){
+    const img = new Image();
+    img.onload = ()=> done(ctx.createPattern(img,'repeat'));
+    img.onerror = ()=>{
+      const can = makeFallbackPattern(fallbackA, fallbackB);
+      done(ctx.createPattern(can,'repeat'));
+    };
+    img.src = path;
+  }
+
+  function loadAllPatterns(then){
+    let left=4;
+    const set = (type,pat)=>{ patterns[type]=pat; if(--left===0) then(); };
+    loadPattern('assets/grass_tile.jpg',  '#3b5d2f','#466d38', p=>set(TILE.PLAIN, p));
+    loadPattern('assets/forest_canopy_tile.jpg', '#2c4a2e','#355c35', p=>set(TILE.FOREST, p));
+    loadPattern('assets/water_tile.jpg',  '#1d4d7a','#2b6aa5', p=>set(TILE.WATER, p));
+    loadPattern('assets/rock_tile.jpg',   '#555555','#6e6e6e', p=>set(TILE.ROCK, p));
+  }
+
+  // --- Tilemap data + helpers ---
+  let tilemap; // Uint8Array length GRID_W*GRID_H
+  function idx(cx,cy){ return cy*GRID_W + cx; }
+  function inBounds(cx,cy){ return cx>=0 && cy>=0 && cx<GRID_W && cy<GRID_H; }
+  function terrainAt(x,y){
+    const cx = Math.floor(x / TILE_SIZE), cy = Math.floor(y / TILE_SIZE);
+    if(!inBounds(cx,cy)) return TILE.ROCK; // treat out-of-bounds as impassable
+    return tilemap[idx(cx,cy)];
+  }
+
+  function carveRiverAndBridges(){
+    // Sinusoidal horizontal river across the map center
+    const midY = Math.floor(GRID_H*0.5);
+    const thickness = 3; // cells half-thickness
+    const waveAmp = 5;   // cells
+    for(let cx=0; cx<GRID_W; cx++){
+      const offset = Math.round(Math.sin(cx/6)*waveAmp);
+      const cyCenter = midY + offset;
+      for(let dy=-thickness; dy<=thickness; dy++){
+        const cy = cyCenter + dy;
+        if(inBounds(cx,cy)) tilemap[idx(cx,cy)] = TILE.WATER;
       }
     }
-    groundPattern = ctx.createPattern(tile, 'repeat');
-  };
-  groundImg.src = 'assets/grass_tile.jpg'; // if this 404s, onerror will kick in
+    // Add a few bridges (convert a vertical strip of water back to plain)
+    const bridges = [8, 22, 36, 44]; // grid x positions
+    for(const bx of bridges){
+      for(let by=0; by<GRID_H; by++){
+        // 2-cell wide bridge
+        if(inBounds(bx,by)) tilemap[idx(bx,by)] = TILE.PLAIN;
+        if(inBounds(bx+1,by)) tilemap[idx(bx+1,by)] = TILE.PLAIN;
+      }
+    }
+  }
 
+  function addBlobs(type, count, radiusCellsMin, radiusCellsMax){
+    for(let i=0;i<count;i++){
+      const cx0 = Math.floor(Math.random()*GRID_W);
+      const cy0 = Math.floor(Math.random()*GRID_H);
+      const r = Math.floor(radiusCellsMin + Math.random()*(radiusCellsMax-radiusCellsMin));
+      for(let cy=cy0-r; cy<=cy0+r; cy++){
+        for(let cx=cx0-r; cx<=cx0+r; cx++){
+          if(!inBounds(cx,cy)) continue;
+          const dx=cx-cx0, dy=cy-cy0;
+          if(dx*dx+dy*dy <= r*r){
+            // Don't overwrite river water with rock/forest unless we want islands; keep water intact
+            if(tilemap[idx(cx,cy)]!==TILE.WATER) tilemap[idx(cx,cy)] = type;
+          }
+        }
+      }
+    }
+  }
+
+  // Keep decorative trees list for visuals (denser in FOREST tiles)
+  function populateTrees(){
+    world.trees.length = 0;
+    const treesPerCell = 0.8;
+    for(let cy=0; cy<GRID_H; cy++){
+      for(let cx=0; cx<GRID_W; cx++){
+        const t = tilemap[idx(cx,cy)];
+        if(t===TILE.FOREST || t===TILE.PLAIN){
+          const k = (t===TILE.FOREST ? 2.0 : 0.4);
+          const count = Math.floor(treesPerCell * k);
+          for(let i=0;i<count;i++){
+            const x = cx*TILE_SIZE + Math.random()*TILE_SIZE;
+            const y = cy*TILE_SIZE + Math.random()*TILE_SIZE;
+            const r = (t===TILE.FOREST? 9+Math.random()*11 : 6+Math.random()*6);
+            world.trees.push({x,y,r});
+          }
+        }
+      }
+    }
+  }
+
+  // --- World reset ---
   function reset(){
     // init fog (completely black)
     fogCtx.globalCompositeOperation = 'source-over';
@@ -304,27 +412,28 @@
       selection:new Set(), selBox:null,
       ended:false, stats:{lost:0,kills:0,timeStart:performance.now()},
       resources:{credits:500},
-      terrainImg:null, clickFx:[],
-      grass: Array.from({length:180},()=>({x:Math.random()*MAP_W,y:Math.random()*MAP_H,r:30+Math.random()*70,a:0.06+Math.random()*0.09})),
-      terrain: Array.from({length:50},()=>({x:Math.random()*MAP_W,y:Math.random()*MAP_H,r:20+Math.random()*40,color:Math.random()<.5?'#4a3d2a':'#6b6b6b'})),
+      clickFx:[]
     };
 
-    // Forests spread across the map
-    forest(260,220,20,120); forest(520,820,26,140); forest(1200,380,24,120);
-    forest(1700,640,28,160); forest(2000,1200,30,170); forest(1400,1100,22,130);
+    // Build tilemap
+    tilemap = new Uint8Array(GRID_W*GRID_H).fill(TILE.PLAIN);
+    carveRiverAndBridges();            // WATER + bridges
+    addBlobs(TILE.FOREST, 18, 3, 6);   // forest patches
+    addBlobs(TILE.ROCK,   12, 2, 4);   // rocky patches
+    populateTrees();
 
-    // Player barracks (build queue)
+    // Player barracks (on safe grass)
     world.buildings.push({
       type:BUILDING_TYPES.BARRACKS, f:F.PLAYER, x:120, y:MAP_H-130, w:70, h:46,
       hp:260, max:260, queue:[], current:null, timeLeft:0
     });
 
     // Player squad near base
-    for(let i=0;i<6;i++){ const u=spawn(200+(i%3)*22,MAP_H-120+Math.floor(i/3)*26,F.PLAYER,'rifleman'); u.selected=true; world.selection.add(u); }
-    for(let i=0;i<2;i++){ const u=spawn(280+(i*22),MAP_H-120,F.PLAYER,'grenadier'); u.selected=true; world.selection.add(u); }
+    for(let i=0;i<6;i++){ const u=spawn(220+(i%3)*22,MAP_H-120+Math.floor(i/3)*26,F.PLAYER,'rifleman'); u.selected=true; world.selection.add(u); }
+    for(let i=0;i<2;i++){ const u=spawn(300+(i*22),MAP_H-120,F.PLAYER,'grenadier'); u.selected=true; world.selection.add(u); }
     updateSelectionHUD();
 
-    // Enemies elsewhere
+    // Enemies across river and north
     for(let i=0;i<8;i++) spawn(1800+(i%4)*26,320+Math.floor(i/4)*26,F.ENEMY,'rifleman');
     for(let i=0;i<3;i++) spawn(1950+(i*26),420,F.ENEMY,'grenadier');
     for(let i=0;i<6;i++) spawn(2100+(i%3)*26,900+Math.floor(i/3)*26,F.ENEMY,'rifleman');
@@ -334,14 +443,6 @@
 
     // Reveal initial area around starting units
     for(const u of world.units){ if(u.f===F.PLAYER) revealAround(u.x,u.y); }
-  }
-
-  function forest(cx,cy,count,spread){
-    for(let i=0;i<count;i++){
-      const a=Math.random()*Math.PI*2,d=(Math.random()**0.8)*spread;
-      const x=cx+Math.cos(a)*d,y=cy+Math.sin(a)*d,r=8+Math.random()*10;
-      world.trees.push({x,y,r});
-    }
   }
 
   function spawn(x,y,f,unitType='rifleman'){
@@ -363,7 +464,6 @@
   // --- Input (pointer) + cursor logic ---
   let pointer={x:0,y:0,down:false,dragStart:null,dragging:false, overEnemy:false};
   const DRAG_THRESH=8;
-
   const canvas=ctx.canvas;
 
   // Keyboard pan
@@ -508,14 +608,27 @@
   function unitAt(x,y,filt){ for(const u of world.units){ if(filt && u.f!==filt) continue; if(Math.hypot(x-u.x,y-u.y)<=u.r+3) return u; } return null; }
   function circleInRect(cx,cy,r,rect){ const rx=clamp(cx,rect.x,rect.x+rect.w), ry=clamp(cy,rect.y,rect.y+rect.h);
     return (cx-r<=rect.x+rect.w && cx+r>=rect.x && cy-r<=rect.y+rect.h && cy+r>=rect.y && ((cx-rx)**2+(cy-ry)**2)<=r*r); }
-  function blocked(ax,ay,bx,by){
-    // line-of-sight blocked by trees (for rifles only)
+
+  // LOS blockers: trees + terrain (FOREST/ROCK). Rifles only use this.
+  function blockedByTerrain(ax,ay,bx,by){
+    const steps = Math.ceil(Math.hypot(bx-ax, by-ay) / 12);
+    for(let i=1;i<steps;i++){
+      const t = i/steps;
+      const x = ax + (bx-ax)*t;
+      const y = ay + (by-ay)*t;
+      const tt = terrainAt(x,y);
+      if(tt===TILE.FOREST || tt===TILE.ROCK) return true;
+    }
+    return false;
+  }
+  function blockedByTrees(ax,ay,bx,by){
     for(const t of world.trees){
       const dx=bx-ax, dy=by-ay, L2=dx*dx+dy*dy||1, u=clamp(((t.x-ax)*dx+(t.y-ay)*dy)/L2,0,1);
       const px=ax+u*dx, py=ay+u*dy, d2=(px-t.x)**2+(py-t.y)**2;
       if(d2 <= (t.r+3)*(t.r+3)) return true;
     } return false;
   }
+  function rifleBlocked(ax,ay,bx,by){ return blockedByTerrain(ax,ay,bx,by) || blockedByTrees(ax,ay,bx,by); }
 
   // --- Fog of War (permanent reveal) ---
   function revealAround(x,y){
@@ -537,7 +650,7 @@
       if(ally===victim) continue;
       if(ally.f!==victim.f || ally.hp<=0) continue;
       const d = Math.hypot(ally.x - victim.x, ally.y - victim.y);
-      if(d <= 150 && !blocked(ally.x,ally.y,attacker.x,attacker.y)){
+      if(d <= 150 && !rifleBlocked(ally.x,ally.y,attacker.x,attacker.y)){
         if(!ally.target || ally.target.dummy) ally.target = attacker;
       }
     }
@@ -583,7 +696,7 @@
   function step(dt){
     world.time += dt; world.tAccum += dt;
 
-    // Keyboard pan per frame
+    // Keyboard pan
     (function panCameraByKeys(){
       let sx = 0, sy = 0;
       const speed = (keys.has('Shift')) ? PAN_SPEED_FAST : PAN_SPEED;
@@ -597,7 +710,6 @@
     // Edge scroll
     (function edgeScroll(){
       if (isPanningDrag) return;
-      // pointer.x/y are world coords; convert to screen
       const screenX = pointer.x - cam.x;
       const screenY = pointer.y - cam.y;
       let ex = 0, ey = 0;
@@ -629,7 +741,7 @@
         let best=null,bd2=Infinity;
         for(const p of world.units){ if(p.f!==F.PLAYER||p.hp<=0) continue;
           const d2=(p.x-u.x)**2+(p.y-u.y)**2;
-          if(d2<bd2 && Math.sqrt(d2)<190 && !blocked(u.x,u.y,p.x,p.y)){ bd2=d2; best=p; } }
+          if(d2<bd2 && Math.sqrt(d2)<190 && !rifleBlocked(u.x,u.y,p.x,p.y)){ bd2=d2; best=p; } }
         if(best) u.target=best; else { u.wander += (Math.random()-0.5)*0.2; u.x += Math.cos(u.wander)*0.6*60*dt; u.y += Math.sin(u.wander)*0.6*60*dt; }
       }
     }
@@ -642,7 +754,7 @@
       if(t){
         const tx=t.x, ty=t.y, dist=Math.hypot(tx-u.x,ty-u.y);
         const inRange=dist<=u.range;
-        const canShoot = inRange && (u.unitType==='grenadier' ? true : !blocked(u.x,u.y,tx,ty));
+        const canShoot = inRange && (u.unitType==='grenadier' ? true : !rifleBlocked(u.x,u.y,tx,ty));
         if(t.dummy){
           moveToward(u,tx,ty,dt,true);
           if(dist<6) u.target=null;
@@ -658,7 +770,14 @@
         u.x+=u.vx*60*dt; u.y+=u.vy*60*dt;
       }
 
-      // tree push-out
+      // Terrain collision / slow
+      const ttype = terrainAt(u.x,u.y);
+      if(ttype===TILE.WATER || ttype===TILE.ROCK){
+        // Nudge out by backing up slightly (prevents getting stuck if spawned on a bad tile)
+        u.x -= u.vx*60*dt; u.y -= u.vy*60*dt;
+        u.vx = u.vy = 0;
+      }
+      // tree push-out (decorative but adds soft collision)
       for(const tr of world.trees){
         const dx=u.x-tr.x, dy=u.y-tr.y, d=Math.hypot(dx,dy);
         if(d<tr.r+u.r){ const push=(tr.r+u.r-d)+0.1, nx=dx/(d||1), ny=dy/(d||1); u.x+=nx*push; u.y+=ny*push; }
@@ -682,7 +801,7 @@
       } else {
         const ang=Math.atan2(b.ty-b.y,b.tx-b.x);
         const nx=Math.cos(ang)*b.spd*60*dt, ny=Math.sin(ang)*b.spd*60*dt;
-        if(blocked(b.ox,b.oy,b.x+nx,b.y+ny)){ world.bullets.splice(i,1); continue; }
+        if(rifleBlocked(b.ox,b.oy,b.x+nx,b.y+ny)){ world.bullets.splice(i,1); continue; }
         b.x+=nx; b.y+=ny; b.life-=dt;
         const t=b.target;
         if(t && t.hp>0 && Math.hypot(b.x-t.x,b.y-t.y)<t.r+3){ t.hp -= b.dmg; reactToAttack(t, b.from); world.bullets.splice(i,1); continue; }
@@ -736,7 +855,19 @@
       vx += (sep.fx*SEP_FORCE)/100; vy += (sep.fy*SEP_FORCE)/100;
       const spd=Math.hypot(vx,vy), max=sp*1.25; if(spd>max){ vx*=max/spd; vy*=max/spd; }
     }
-    // sidestep trees
+
+    // movement speed modifier by terrain at NEXT position
+    const nx = u.x + vx*60*dt, ny = u.y + vy*60*dt;
+    const ttype = terrainAt(nx,ny);
+    if(ttype===TILE.WATER || ttype===TILE.ROCK){
+      // Try a simple sidestep to skirt the obstacle
+      const side = Math.random()<.5?Math.PI/2:-Math.PI/2;
+      vx=Math.cos(ang+side)*sp*.85; vy=Math.sin(ang+side)*sp*.85;
+    } else if(ttype===TILE.FOREST){
+      vx *= 0.75; vy *= 0.75; // slow in forest
+    }
+
+    // sidestep trees (soft)
     let blockedMove=false;
     for(const tr of world.trees){ const dx=(u.x+vx*60*dt)-tr.x, dy=(u.y+vy*60*dt)-tr.y; if(Math.hypot(dx,dy)<tr.r+u.r){ blockedMove=true; break; } }
     if(blockedMove){ const side=Math.random()<.5?Math.PI/2:-Math.PI/2; vx=Math.cos(ang+side)*sp*.85; vy=Math.sin(ang+side)*sp*.85; }
@@ -775,32 +906,38 @@
   }
 
   // --- Drawing helpers (camera-aware) ---
-  function drawTerrain(){
-    // Tiled ground pattern
-    if(groundPattern){
-      ctx.save();
-      ctx.translate(- (cam.x % 256), - (cam.y % 256));
-      ctx.fillStyle = groundPattern;
-      ctx.fillRect(-256, -256, VIEW_W+512, VIEW_H+512);
-      ctx.restore();
-    } else {
-      ctx.fillStyle='#355a2f'; ctx.fillRect(0,0,VIEW_W,VIEW_H);
+  function drawTileLayer(){
+    // Fill each visible cell with its pattern, aligned to world origin
+    const startCX = Math.max(0, Math.floor(cam.x / TILE_SIZE));
+    const endCX   = Math.min(GRID_W-1, Math.floor((cam.x+VIEW_W)/TILE_SIZE));
+    const startCY = Math.max(0, Math.floor(cam.y / TILE_SIZE));
+    const endCY   = Math.min(GRID_H-1, Math.floor((cam.y+VIEW_H)/TILE_SIZE));
+
+    // For pattern alignment, draw with a translation so pattern anchors to 0,0 world
+    ctx.save();
+    ctx.translate(- (cam.x % 256), - (cam.y % 256));
+
+    for(let cy=startCY; cy<=endCY; cy++){
+      for(let cx=startCX; cx<=endCX; cx++){
+        const t = tilemap[idx(cx,cy)];
+        const pat = patterns[t] || patterns[TILE.PLAIN];
+        ctx.fillStyle = pat;
+        const sx = cx*TILE_SIZE - cam.x % 256;
+        const sy = cy*TILE_SIZE - cam.y % 256;
+        ctx.fillRect(sx, sy, TILE_SIZE, TILE_SIZE);
+      }
     }
-    // Variation blobs (within view)
-    for(const g of world.grass){ 
-      const s=worldToScreen(g.x,g.y); if(s.x<-120||s.y<-120||s.x>VIEW_W+120||s.y>VIEW_H+120) continue;
-      ctx.fillStyle=`rgba(84,140,72,${g.a})`; ctx.beginPath(); ctx.arc(s.x,s.y,g.r,0,Math.PI*2); ctx.fill(); 
-    }
-    for(const t of world.terrain){ 
-      const s=worldToScreen(t.x,t.y); if(s.x<-120||s.y<-120||s.x>VIEW_W+120||s.y>VIEW_H+120) continue;
-      ctx.fillStyle=t.color; ctx.beginPath(); ctx.arc(s.x,s.y,t.r,0,Math.PI*2); ctx.fill(); 
-    }
+    ctx.restore();
   }
 
   function drawTrees(){
     for(const t of world.trees){
       const s=worldToScreen(t.x,t.y);
       if(s.x<-t.r-4||s.y<-t.r-4||s.x>VIEW_W+t.r+4||s.y>VIEW_H+t.r+4) continue;
+      // only draw trees if that tile is not water/rock
+      const tt = terrainAt(t.x,t.y);
+      if(tt===TILE.WATER || tt===TILE.ROCK) continue;
+
       ctx.fillStyle='rgba(0,0,0,.35)'; ctx.beginPath(); ctx.arc(s.x+2,s.y+2,t.r,0,Math.PI*2); ctx.fill();
       const grad=ctx.createRadialGradient(s.x-2,s.y-2,2,s.x,s.y,t.r);
       grad.addColorStop(0,'#3f7a3f'); grad.addColorStop(1,'#235a29');
@@ -813,7 +950,6 @@
     const isPlayer = b.f===F.PLAYER;
     const s=worldToScreen(b.x,b.y);
     const x=s.x, y=s.y, w=b.w, h=b.h;
-
     if(x<-w||y<-h||x>VIEW_W||y>VIEW_H) return;
 
     ctx.fillStyle='rgba(0,0,0,.35)'; ctx.fillRect(x+3,y+3,w,h);
@@ -821,14 +957,10 @@
     roundRect(x,y,w,h,6,true,false);
     ctx.fillStyle = isPlayer ? '#2d4a6b' : '#6b2d2d';
     roundRect(x+4,y+4,w-8,14,4,true,false);
-    ctx.fillStyle = 'rgba(255,255,255,.15)';
-    ctx.fillRect(x+8,y+6,12,3);
-    ctx.fillRect(x+w-20,y+6,12,3);
-    ctx.fillStyle = '#0e121d';
-    ctx.fillRect(x+w/2-6,y+h-16,12,16);
+    ctx.fillStyle = 'rgba(255,255,255,.15)'; ctx.fillRect(x+8,y+6,12,3); ctx.fillRect(x+w-20,y+6,12,3);
+    ctx.fillStyle = '#0e121d'; ctx.fillRect(x+w/2-6,y+h-16,12,16);
     ctx.fillStyle = isPlayer ? '#3bd1ff' : '#ff6666';
-    ctx.fillRect(x+6,y-8,2,8);
-    ctx.beginPath(); ctx.moveTo(x+8,y-8); ctx.lineTo(x+22,y-3); ctx.lineTo(x+8,y+2); ctx.closePath(); ctx.fill();
+    ctx.fillRect(x+6,y-8,2,8); ctx.beginPath(); ctx.moveTo(x+8,y-8); ctx.lineTo(x+22,y-3); ctx.lineTo(x+8,y+2); ctx.closePath(); ctx.fill();
 
     // HP bar
     ctx.fillStyle='#0e121d'; ctx.fillRect(x,y-10,w,4);
@@ -854,9 +986,7 @@
     if(fill) ctx.fill(); if(stroke) ctx.stroke();
   }
 
-  function drawBuildings(){
-    for(const b of world.buildings){ drawBarracks(b); }
-  }
+  function drawBuildings(){ for(const b of world.buildings){ drawBarracks(b); } }
 
   // Animated soldier (camera-aware)
   function drawSoldier(u){
@@ -950,24 +1080,42 @@
   }
 
   // --- Fog draw (overlay current viewport) ---
-  function drawFog(){
-    ctx.drawImage(fogCanvas, cam.x, cam.y, VIEW_W, VIEW_H, 0, 0, VIEW_W, VIEW_H);
-  }
+  function drawFog(){ ctx.drawImage(fogCanvas, cam.x, cam.y, VIEW_W, VIEW_H, 0, 0, VIEW_W, VIEW_H); }
 
   // --- Minimap draw ---
   function drawMinimap(){
+    // Base = downsampled fog (dark shows unexplored)
     mctx.fillStyle = '#203046'; mctx.fillRect(0,0,MINI_W,MINI_H);
+
+    // Draw terrain colors lightly under the fog preview
+    for(let cy=0; cy<GRID_H; cy++){
+      for(let cx=0; cx<GRID_W; cx++){
+        const t = tilemap[idx(cx,cy)];
+        let col = '#3a5f2f';
+        if(t===TILE.FOREST) col='#2c4a2e';
+        else if(t===TILE.WATER) col='#1d4d7a';
+        else if(t===TILE.ROCK) col='#555555';
+        mctx.fillStyle = col;
+        mctx.fillRect(Math.floor(cx*TILE_SIZE*mScaleX), Math.floor(cy*TILE_SIZE*mScaleY),
+                      Math.ceil(TILE_SIZE*mScaleX), Math.ceil(TILE_SIZE*mScaleY));
+      }
+    }
+
+    // Fog overlay
     try{
       const temp = document.createElement('canvas'); temp.width=MINI_W; temp.height=MINI_H;
       const tctx=temp.getContext('2d');
       tctx.drawImage(fogCanvas, 0,0,MAP_W,MAP_H, 0,0,MINI_W,MINI_H);
+      mctx.globalAlpha = 0.75;
       mctx.drawImage(temp,0,0);
-      mctx.strokeStyle = '#8ab4ff'; mctx.lineWidth = 1;
-      const rx = cam.x * mScaleX, ry = cam.y * mScaleY, rw = VIEW_W * mScaleX, rh = VIEW_H * mScaleY;
-      mctx.strokeRect(rx, ry, rw, rh);
-    }catch(_e){
-      mctx.strokeStyle = '#8ab4ff'; mctx.strokeRect(cam.x*mScaleX, cam.y*mScaleY, VIEW_W*mScaleX, VIEW_H*mScaleY);
-    }
+      mctx.globalAlpha = 1;
+    }catch(_e){}
+
+    // Camera rect
+    mctx.strokeStyle = '#8ab4ff'; mctx.lineWidth = 1;
+    mctx.strokeRect(cam.x*mScaleX, cam.y*mScaleY, VIEW_W*mScaleX, VIEW_H*mScaleY);
+
+    // Units
     for(const u of world.units){
       mctx.fillStyle = (u.f===F.PLAYER)?'#3bd1ff':'#ff6666';
       mctx.fillRect((u.x*mScaleX)|0, (u.y*mScaleY)|0, 2, 2);
@@ -976,7 +1124,7 @@
 
   // --- Render ---
   function draw(){
-    drawTerrain();
+    drawTileLayer();
     drawTrees();
     drawBuildings();
 
@@ -1037,7 +1185,7 @@
     statsEl.textContent=`Time: ${sec}s • Lost: ${world.stats.lost} • Kills: ${world.stats.kills}`;
   }
 
-  // Drag/drop + button to set terrain image (used to tile-cover the map if desired)
+  // Drag/drop + button to set a big baked terrain image (optional override)
   terrainBtn.onclick = () => terrainFile.click();
   terrainFile.onchange = (e)=>{
     const file = e.target.files?.[0]; if(!file) return;
@@ -1048,8 +1196,8 @@
       const pat = tctx.createPattern(img,'repeat');
       if(pat){ tctx.fillStyle=pat; tctx.fillRect(0,0,MAP_W,MAP_H); }
       else { tctx.drawImage(img, 0,0,MAP_W,MAP_H); }
-      // Replace ground pattern with this baked texture
-      groundPattern = ctx.createPattern(tc, 'no-repeat');
+      // Replace grass pattern with this baked texture
+      patterns[TILE.PLAIN] = ctx.createPattern(tc, 'no-repeat');
     };
     img.src = URL.createObjectURL(file);
   };
@@ -1063,12 +1211,13 @@
       const pat = tctx.createPattern(img,'repeat');
       if(pat){ tctx.fillStyle=pat; tctx.fillRect(0,0,MAP_W,MAP_H); }
       else { tctx.drawImage(img, 0,0,MAP_W,MAP_H); }
-      groundPattern = ctx.createPattern(tc, 'no-repeat');
+      patterns[TILE.PLAIN] = ctx.createPattern(tc, 'no-repeat');
     };
     img.src = URL.createObjectURL(file);
   });
 
-  reset(); requestAnimationFrame(loop);
+  // Load tile patterns, then start
+  loadAllPatterns(()=>{ reset(); requestAnimationFrame(loop); });
 })();
 </script>
 </body>

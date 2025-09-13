@@ -559,24 +559,24 @@
     // selection box
     if(world.selBox){ const s=world.selBox; ctx.setLineDash([6,4]); ctx.strokeStyle='#8ab4ff'; ctx.strokeRect(s.x,s.y,s.w,s.h); ctx.setLineDash([]); }
     
-    // hud
-    ctx.fillStyle='#aab3c9'; ctx.font='12px system-ui';
+    // hud - bigger and whiter text
+    ctx.fillStyle='#ffffff'; ctx.font='bold 14px system-ui';
     const p=world.units.filter(u=>u.f===F.PLAYER).length, e=world.units.filter(u=>u.f===F.ENEMY).length;
-    ctx.fillText(`Credits: ${world.resources.credits}  |  Troops: ${p}  |  Hostiles: ${e}`,10,18);
+    ctx.fillText(`Credits: ${world.resources.credits}  |  Troops: ${p}  |  Hostiles: ${e}`,10,20);
     
     // Building production status
     const base = world.buildings.find(b => b.f === F.PLAYER && b.type === BUILDING_TYPES.BASE);
     if(base && base.production){
       const progress = 1 - (base.productionTime / (base.production === 'rifleman' ? 3 : 4));
-      ctx.fillText(`Building: ${base.production} (${Math.round(progress*100)}%)`, 10, 35);
+      ctx.fillText(`Building: ${base.production} (${Math.round(progress*100)}%)`, 10, 40);
     }
     
     // Debug info
     const playerUnits = world.units.filter(u => u.f === F.PLAYER);
-    ctx.fillText(`Player units: ${playerUnits.length}`, 10, 50);
+    ctx.fillText(`Player units: ${playerUnits.length}`, 10, 60);
     if(playerUnits.length > 0){
       const firstUnit = playerUnits[0];
-      ctx.fillText(`First unit at: ${Math.round(firstUnit.x)}, ${Math.round(firstUnit.y)}`, 10, 65);
+      ctx.fillText(`First unit at: ${Math.round(firstUnit.x)}, ${Math.round(firstUnit.y)}`, 10, 80);
     }
   }
 

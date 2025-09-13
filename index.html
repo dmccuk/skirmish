@@ -298,7 +298,12 @@
           // Spawn unit near building
           const spawnX = b.x + b.w/2 + (Math.random()-0.5)*20;
           const spawnY = b.y - 20;
-          spawn(spawnX, spawnY, b.f, b.production);
+          const newUnit = spawn(spawnX, spawnY, b.f, b.production);
+          // Auto-select newly built units
+          if(b.f === F.PLAYER){
+            newUnit.selected = true;
+            world.selection.add(newUnit);
+          }
           b.production = null;
           b.productionTime = 0;
         }
@@ -462,7 +467,7 @@
         
         // Production indicator
         if(b.production){
-          const progress = 1 - (b.productionTime / 3); // 3 second production time
+          const progress = 1 - (b.productionTime / (b.production === 'rifleman' ? 3 : 4));
           ctx.fillStyle='#36d399';
           ctx.fillRect(b.x, b.y-6, b.w * progress, 4);
         }
@@ -472,7 +477,7 @@
         ctx.fillStyle='#36d399'; ctx.fillRect(b.x, b.y-12, b.w*(b.hp/b.max), 4);
       }
     }
-    // units (only in revealed areas, except player units)
+    // units (player units always visible, enemy units only in revealed areas)
     for(const u of world.units){
       if(u.f === F.PLAYER || isRevealed(u.x, u.y)){
         // Shadow
@@ -537,6 +542,14 @@
     if(base && base.production){
       const progress = 1 - (base.productionTime / (base.production === 'rifleman' ? 3 : 4));
       ctx.fillText(`Building: ${base.production} (${Math.round(progress*100)}%)`, 10, 35);
+    }
+    
+    // Debug info
+    const playerUnits = world.units.filter(u => u.f === F.PLAYER);
+    ctx.fillText(`Player units: ${playerUnits.length}`, 10, 50);
+    if(playerUnits.length > 0){
+      const firstUnit = playerUnits[0];
+      ctx.fillText(`First unit at: ${Math.round(firstUnit.x)}, ${Math.round(firstUnit.y)}`, 10, 65);
     }
   }
 

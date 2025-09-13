@@ -71,6 +71,11 @@
     fogCtx.fillRect(0, 0, W, H);
     // simple grassy terrain blobs
     world.grass=Array.from({length:160},()=>({x:Math.random()*W,y:Math.random()*H,r:30+Math.random()*80,a:0.06+Math.random()*0.08}));
+    // Add some colorful terrain features
+    world.terrain=Array.from({length:30},()=>({
+      x:Math.random()*W, y:Math.random()*H, r:20+Math.random()*40,
+      type:Math.random()<0.5?'dirt':'rock', color:Math.random()<0.5?'#4a3d2a':'#5a5a5a'
+    }));
     // forests
     forest(260,220,16,90); forest(520,420,20,100); forest(740,180,18,85);
     // player base
@@ -439,9 +444,24 @@
 
   // -------- Rendering --------
   function draw(){
-    // grass
-    ctx.fillStyle='#1c3020'; ctx.fillRect(0,0,W,H);
+    // Base terrain with more color
+    ctx.fillStyle='#2d4a2d'; ctx.fillRect(0,0,W,H);
+    
+    // Add some brown dirt patches
+    for(let i=0;i<20;i++){
+      const x=Math.random()*W, y=Math.random()*H, r=40+Math.random()*60;
+      ctx.fillStyle='#4a3d2a';
+      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    }
+    
+    // Add grass patches
     for(const g of world.grass){ ctx.fillStyle=`rgba(72,110,60,${g.a})`; ctx.beginPath(); ctx.arc(g.x,g.y,g.r,0,Math.PI*2); ctx.fill(); }
+    
+    // Add terrain features (dirt and rock patches)
+    for(const t of world.terrain){
+      ctx.fillStyle = t.color;
+      ctx.beginPath(); ctx.arc(t.x,t.y,t.r,0,Math.PI*2); ctx.fill();
+    }
     // trees (only in revealed areas)
     for(const t of world.trees){
       if(isRevealed(t.x, t.y)){
@@ -480,6 +500,13 @@
     // units (player units always visible, enemy units only in revealed areas)
     for(const u of world.units){
       if(u.f === F.PLAYER || isRevealed(u.x, u.y)){
+        // Debug circle to make sure units are being drawn
+        ctx.strokeStyle = u.f === F.PLAYER ? '#00ff00' : '#ff0000';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(u.x, u.y, u.r + 5, 0, Math.PI * 2);
+        ctx.stroke();
+        
         // Shadow
         ctx.fillStyle='rgba(0,0,0,.3)'; ctx.fillRect(u.x-6,u.y+4,16,16);
         
@@ -501,6 +528,26 @@
         ctx.fillStyle='#36d399'; ctx.fillRect(u.x-10,u.y-16,20*(u.hp/u.max),4);
       }
     }
+    // fog of war - black overlay for unrevealed areas (but preserve player units)
+    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+    ctx.fillRect(0, 0, W, H);
+    
+    // Clear fog in revealed areas AND around player units
+    ctx.globalCompositeOperation = 'destination-out';
+    for(const key of world.revealed){
+      const [x, y] = key.split(',').map(Number);
+      ctx.fillRect(x, y, 4, 4);
+    }
+    // Also clear fog around all player units so they're always visible
+    for(const u of world.units){
+      if(u.f === F.PLAYER && u.hp > 0){
+        ctx.beginPath();
+        ctx.arc(u.x, u.y, 20, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    
     // bullets
     for(const b of world.bullets){ ctx.fillStyle='#f8f1b8'; ctx.fillRect(b.x-2,b.y-2,4,4); }
     // explosions
@@ -520,17 +567,6 @@
     }
     // selection box
     if(world.selBox){ const s=world.selBox; ctx.setLineDash([6,4]); ctx.strokeStyle='#8ab4ff'; ctx.strokeRect(s.x,s.y,s.w,s.h); ctx.setLineDash([]); }
-    // fog of war - black overlay for unrevealed areas
-    ctx.fillStyle = 'rgba(0,0,0,0.8)';
-    ctx.fillRect(0, 0, W, H);
-    
-    // Clear fog in revealed areas
-    ctx.globalCompositeOperation = 'destination-out';
-    for(const key of world.revealed){
-      const [x, y] = key.split(',').map(Number);
-      ctx.fillRect(x, y, 4, 4);
-    }
-    ctx.globalCompositeOperation = 'source-over';
     
     // hud
     ctx.fillStyle='#aab3c9'; ctx.font='12px system-ui';

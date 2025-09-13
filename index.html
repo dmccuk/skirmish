@@ -444,13 +444,13 @@
 
   // -------- Rendering --------
   function draw(){
-    // Base terrain with more color
-    ctx.fillStyle='#2d4a2d'; ctx.fillRect(0,0,W,H);
+    // Base terrain with more vibrant color
+    ctx.fillStyle='#3d6b3d'; ctx.fillRect(0,0,W,H);
     
     // Add some brown dirt patches
     for(let i=0;i<20;i++){
       const x=Math.random()*W, y=Math.random()*H, r=40+Math.random()*60;
-      ctx.fillStyle='#4a3d2a';
+      ctx.fillStyle='#6b4d3a';
       ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
     }
     
@@ -465,8 +465,13 @@
     // trees (only in revealed areas)
     for(const t of world.trees){
       if(isRevealed(t.x, t.y)){
-        ctx.fillStyle='#513d2b'; ctx.beginPath(); ctx.arc(t.x,t.y+t.r*0.55,2.5,0,Math.PI*2); ctx.fill();
-        const grad=ctx.createRadialGradient(t.x-2,t.y-2,2,t.x,t.y,t.r); grad.addColorStop(0,'#3f6b3f'); grad.addColorStop(1,'#254c2a');
+        // Tree trunk
+        ctx.fillStyle='#8b4513'; ctx.beginPath(); ctx.arc(t.x,t.y+t.r*0.55,3,0,Math.PI*2); ctx.fill();
+        // Tree canopy - more vibrant green
+        const grad=ctx.createRadialGradient(t.x-2,t.y-2,2,t.x,t.y,t.r); 
+        grad.addColorStop(0,'#4a8b4a'); 
+        grad.addColorStop(0.7,'#2d6b2d'); 
+        grad.addColorStop(1,'#1a4a1a');
         ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(t.x,t.y,t.r,0,Math.PI*2); ctx.fill();
       }
     }
@@ -476,8 +481,8 @@
         // Building shadow
         ctx.fillStyle='rgba(0,0,0,.4)'; ctx.fillRect(b.x+2,b.y+2,b.w,b.h);
         
-        // Building body
-        ctx.fillStyle = b.f === F.PLAYER ? '#4a6b8a' : '#8a4a4a';
+        // Building body - more vibrant colors
+        ctx.fillStyle = b.f === F.PLAYER ? '#4a8bd3' : '#d34a4a';
         ctx.fillRect(b.x, b.y, b.w, b.h);
         
         // Building details
@@ -500,24 +505,26 @@
     // units (player units always visible, enemy units only in revealed areas)
     for(const u of world.units){
       if(u.f === F.PLAYER || isRevealed(u.x, u.y)){
-        // Debug circle to make sure units are being drawn
-        ctx.strokeStyle = u.f === F.PLAYER ? '#00ff00' : '#ff0000';
-        ctx.lineWidth = 2;
+        // Simple colored circles instead of complex sprites
+        const unitColor = u.f === F.PLAYER ? '#4a8bd3' : '#d34a4a';
+        const unitType = u.unitType || 'rifleman';
+        
+        // Main unit body
+        ctx.fillStyle = unitColor;
         ctx.beginPath();
-        ctx.arc(u.x, u.y, u.r + 5, 0, Math.PI * 2);
-        ctx.stroke();
+        ctx.arc(u.x, u.y, u.r, 0, Math.PI * 2);
+        ctx.fill();
         
-        // Shadow
-        ctx.fillStyle='rgba(0,0,0,.3)'; ctx.fillRect(u.x-6,u.y+4,16,16);
-        
-        // Draw sprite
-        const sprite = createSoldierSprite(u.f, u.unitType || 'rifleman');
-        ctx.drawImage(sprite, u.x-8, u.y-8);
+        // Unit type indicator (smaller circle inside)
+        ctx.fillStyle = unitType === 'grenadier' ? '#ffaa00' : '#ffffff';
+        ctx.beginPath();
+        ctx.arc(u.x, u.y, u.r * 0.6, 0, Math.PI * 2);
+        ctx.fill();
         
         // Selection ring
         if(u.selected){ 
           ctx.strokeStyle='#d7f5ff'; 
-          ctx.lineWidth=2; 
+          ctx.lineWidth=3; 
           ctx.beginPath(); 
           ctx.arc(u.x,u.y,u.r+3,0,Math.PI*2); 
           ctx.stroke(); 

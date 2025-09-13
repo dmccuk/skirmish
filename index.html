@@ -7,12 +7,12 @@
   <style>
     html,body{height:100%;margin:0;background:#0b0e16;color:#e6e8ef;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
     #ui{position:fixed;left:0;right:0;top:0;padding:8px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
-        background:linear-gradient(180deg,rgba(11,14,22,.9),rgba(11,14,22,0));font-size:14px;z-index:2}
+        background:linear-gradient(180deg,rgba(11,14,22,.9),rgba(11,14,22,0));font-size:14px;z-index:3}
     .pill{background:#121827;border:1px solid #1e2639;padding:6px 10px;border-radius:999px}
     #wrap{height:100%;display:grid;place-items:center}
     canvas{touch-action:none;border:1px solid #1e2639;border-radius:12px;background:#0f1424;
            box-shadow:0 10px 30px rgba(0,0,0,.35)}
-    #overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(5,8,16,.65);z-index:3}
+    #overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(5,8,16,.65);z-index:4}
     #panel{background:#0f1424;border:1px solid #1e2639;padding:24px;border-radius:16px;text-align:center;max-width:520px}
     button{background:#1b2a4a;border:1px solid #2a3b65;color:#e6e8ef;padding:10px 14px;border-radius:10px;cursor:pointer}
     #btns{display:flex;gap:8px}
@@ -20,6 +20,34 @@
     .spacer{flex:1 1 0}
     #audioControls{display:flex;gap:6px;align-items:center}
     #volumeSlider{width:80px}
+
+    /* Selection HUD */
+    #selHUD{
+      position:fixed;left:12px;top:64px;z-index:2;
+      background:#0f1424;border:1px solid #1e2639;border-radius:12px;
+      padding:10px; min-width:180px; max-width:260px;
+      box-shadow:0 8px 22px rgba(0,0,0,.35)
+    }
+    #selHUD h4{margin:0 0 8px 0;font-size:12px;color:#aab4d0;display:flex;justify-content:space-between;gap:8px}
+    #selHUD .grid{
+      display:grid;grid-template-columns:repeat(6,1fr);gap:6px;
+    }
+    .tile{
+      position:relative;height:24px;border-radius:6px;border:1px solid #243151;
+      background:#18223a; display:flex;align-items:center;justify-content:center;
+      font-size:11px; color:#dce6ff;
+    }
+    .tile.rifle{background:#294160;border-color:#345180}
+    .tile.gren{background:#6b3d1f;border-color:#8a5a2e}
+    .hpbar{
+      position:absolute;left:2px;right:2px;bottom:2px;height:3px;background:#0b1120;border-radius:3px;
+      overflow:hidden;
+    }
+    .hpbar>span{display:block;height:100%;background:#36d399}
+    #orderFlash{
+      margin-top:6px;font-size:11px;color:#cfe8ff;opacity:0;transition:opacity .25s ease;
+    }
+    #orderFlash.show{opacity:1}
   </style>
 </head>
 <body>
@@ -40,6 +68,13 @@
     </div>
     <div class="pill"><b>Army Skirmish</b> — tap ground to move (green), tap enemy to attack (red)</div>
     <div class="pill">Drag to box-select • Fog of war • Trees block LoS (rifle) • Grenadiers lob over cover</div>
+  </div>
+
+  <!-- Selection HUD -->
+  <div id="selHUD">
+    <h4><span>Selected</span><span id="selCount">0</span></h4>
+    <div class="grid" id="selGrid"></div>
+    <div id="orderFlash">Order: Move</div>
   </div>
 
   <div id="wrap"><canvas id="c" width="960" height="600"></canvas></div>
@@ -69,12 +104,18 @@
   const volumeSlider=document.getElementById('volumeSlider');
   const canvas=ctx.canvas;
 
+  // Selection HUD elements
+  const selCountEl = document.getElementById('selCount');
+  const selGridEl  = document.getElementById('selGrid');
+  const orderFlash = document.getElementById('orderFlash');
+  let orderFlashTimer=null;
+
   // --- Audio ---
   const bgm = new Audio('assets/skirmish1.mp3');
   bgm.loop = true;
   bgm.volume = parseFloat(volumeSlider.value);
 
-  const deathSoundBase = new Audio('assets/death.mp3'); // change to cry.mp3 if desired
+  const deathSoundBase = new Audio('assets/death.mp3'); // or cry.mp3
   deathSoundBase.volume = 0.6;
 
   bgm.play().catch(() => {
@@ -136,6 +177,7 @@
     // Player squad (6 rifle + 2 grenadiers)
     for(let i=0;i<6;i++){ const u=spawn(160+(i%3)*22,500+Math.floor(i/3)*26,F.PLAYER,'rifleman'); u.selected=true; world.selection.add(u); }
     for(let i=0;i<2;i++){ const u=spawn(240+(i*22),500,F.PLAYER,'grenadier'); u.selected=true; world.selection.add(u); }
+    updateSelectionHUD();
 
     // Enemies
     for(let i=0;i<6;i++) spawn(760+(i%3)*24,160+Math.floor(i/3)*24,F.ENEMY,'rifleman');
@@ -154,10 +196,10 @@
   function spawn(x,y,f,unitType='rifleman'){
     const base = {
       rifleman:  {hp:48,max:48,range:115,dmg:9,  s:1.7},
-      // 🔥 Grenadier buffs: long range lob
-      grenadier: {hp:60,max:60,range:220,dmg:25, s:1.4}
+      grenadier: {hp:60,max:60,range:220,dmg:25, s:1.4} // long-range lobber
     }[unitType];
     const u={
+      id:Math.random().toString(36).slice(2),
       type:'unit', f, x, y, r:8,
       hp:base.hp, max:base.max, range:base.range, dmg:base.dmg, s:base.s,
       cd:0, unitType,
@@ -201,19 +243,23 @@
     if(pointer.dragging && world.selBox){
       world.selection.forEach(u=>u.selected=false); world.selection.clear();
       world.units.forEach(u=>{ if(u.f===F.PLAYER && circleInRect(u.x,u.y,u.r,world.selBox)){ u.selected=true; world.selection.add(u);} });
+      updateSelectionHUD();
     } else {
       const enemy = unitAt(p.x,p.y,F.ENEMY);
       const friendly = unitAt(p.x,p.y,F.PLAYER);
       if(enemy && hasSel){
         world.selection.forEach(u=>u.target=enemy);
+        flashOrder('Attack');
         addClickFx(p.x,p.y,'#ff4d5a'); // red click effect
       }
       else if(friendly){
         world.selection.forEach(u=>u.selected=false); world.selection.clear();
         friendly.selected=true; world.selection.add(friendly);
+        updateSelectionHUD();
       }
       else if(hasSel){ // ground move -> FORMATION assignment
         assignFormationMove([...world.selection], p.x, p.y);
+        flashOrder('Move');
         addClickFx(p.x,p.y,'#27e36a'); // green click effect
       }
     }
@@ -228,6 +274,7 @@
   btnSelectAll.onclick=()=>{
     world.selection.forEach(u=>u.selected=false); world.selection.clear();
     world.units.forEach(u=>{ if(u.f===F.PLAYER){ u.selected=true; world.selection.add(u);} });
+    updateSelectionHUD();
   };
   btnRestart.onclick=()=>location.reload();
 
@@ -263,7 +310,8 @@
     } return false;
   }
 
-  // Fog of War (simple revealed set)
+  // Fog of War
+  const VISION=80;
   function revealAround(x,y){
     for(let dx=-VISION; dx<=VISION; dx+=4){
       for(let dy=-VISION; dy<=VISION; dy+=4){
@@ -416,25 +464,20 @@
         const k = Math.min(1, b.t / b.tMax);
         const x = b.ox + (b.tx - b.ox) * k;
         const y = b.oy + (b.ty - b.oy) * k;
-        // arc height scales with distance
         const dist = Math.hypot(b.tx - b.ox, b.ty - b.oy);
         const h = Math.min(90, 18 + dist*0.18);
-        const yArc = y - (4 * h * k * (1 - k)); // simple parabola
-
+        const yArc = y - (4 * h * k * (1 - k));
         b.x = x; b.y = yArc;
 
-        // detonate on arrival
         if(k >= 1){
           explode(b.x,b.y,b.blastRadius,b.dmg,b.f,b.from);
           world.bullets.splice(i,1);
           continue;
         }
       } else {
-        // regular bullet (LoS already checked)
         const ang=Math.atan2(b.ty-b.y,b.tx-b.x);
         const nx=Math.cos(ang)*b.spd*60*dt, ny=Math.sin(ang)*b.spd*60*dt;
 
-        // stop on tree for normal bullets only
         if(blocked(b.ox,b.oy,b.x+nx,b.y+ny)){ 
           world.bullets.splice(i,1); 
           continue; 
@@ -458,13 +501,14 @@
     // Barracks production (queue)
     const barracks = getBarracks(F.PLAYER);
     if(barracks && barracks.hp>0){
-      if(!barracks.current && barracks.queue.length>0){ startNextInQueue(barracks); }
+      if(!barracks.current && b.queue?.length>0){ startNextInQueue(barracks); }
       if(barracks.current){
         barracks.timeLeft -= dt;
         if(barracks.timeLeft<=0){
           const spawnX=barracks.x+barracks.w/2+(Math.random()-0.5)*20, spawnY=barracks.y-10;
           const nu=spawn(spawnX,spawnY,barracks.f,barracks.current.kind);
           nu.selected=true; world.selection.add(nu);
+          updateSelectionHUD();
           barracks.current=null; barracks.timeLeft=0;
           startNextInQueue(barracks);
         }
@@ -483,9 +527,15 @@
       const s = deathSoundBase.cloneNode();
       s.play().catch(()=>{});
 
+      // If a dead unit was selected, remove from HUD
+      if(u.selected){ world.selection.delete(u); }
+
       if(u.f===F.PLAYER) world.stats.lost++; else world.stats.kills++;
       world.units.splice(i,1);
     }
+    // Keep HUD in sync (e.g., if some died)
+    updateSelectionHUD();
+
     const pAlive=world.units.some(u=>u.f===F.PLAYER), eAlive=world.units.some(u=>u.f===F.ENEMY);
     if(!pAlive||!eAlive) endGame(pAlive && !eAlive);
   }
@@ -512,9 +562,9 @@
 
   function fire(from,target){
     if(from.unitType==='grenadier'){
-      // 🎯 Ballistic grenade that ignores trees & explodes at target
+      // Ballistic grenade that ignores trees & explodes at target
       const dist = Math.hypot(target.x - from.x, target.y - from.y);
-      const flight = clamp(0.55 + dist / 600, 0.55, 1.2); // time in air scales with distance
+      const flight = clamp(0.55 + dist / 600, 0.55, 1.2);
       world.bullets.push({
         x:from.x, y:from.y, ox:from.x, oy:from.y,
         tx:target.x, ty:target.y, target,
@@ -536,7 +586,7 @@
       if(u.f===faction || u.hp<=0) continue;
       const dist=Math.hypot(u.x-x,u.y-y);
       if(dist<=radius){
-        const dd=Math.max(1, dmg*(1-dist/radius));
+        const dd=Math.max(1, dmg*(1-dist/radius)); 
         u.hp-=dd;
         if(attacker) reactToAttack(u, attacker);
       }
@@ -631,26 +681,33 @@
     const dir = u.facing;
     ctx.save(); ctx.translate(u.x,u.y); ctx.rotate(dir);
 
+    // shadow
     ctx.fillStyle='rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(2,3,u.r*0.9,u.r*0.6,0,0,Math.PI*2); ctx.fill();
 
+    // legs (swing)
     const swing = Math.sin(u.walk)*3.2, backSwing = -Math.sin(u.walk)*3.2;
     ctx.strokeStyle = '#1c2535'; ctx.lineWidth=2;
     ctx.beginPath(); ctx.moveTo(-2,4); ctx.lineTo(-2,4+swing); ctx.stroke();
     ctx.beginPath(); ctx.moveTo( 2,4); ctx.lineTo( 2,4+backSwing); ctx.stroke();
 
+    // body
     const bodyColor = (u.f===F.PLAYER)?'#4a6b8a':'#8a4a4a';
     ctx.fillStyle=bodyColor; ctx.fillRect(-3,-2,6,8);
 
+    // head + helmet
     ctx.fillStyle='#f4c2a1'; ctx.fillRect(-2.2,-6,4.4,3);
     ctx.fillStyle=(u.f===F.PLAYER)?'#2d4a6b':'#6b2d2d'; ctx.fillRect(-3,-7,6,2);
 
+    // weapon
     ctx.fillStyle='#303030';
     if(u.unitType==='grenadier'){ ctx.fillRect(4,-1,6,2); ctx.fillRect(10,-2,2,4); }
     else { ctx.fillRect(3,-1,7,1.5); ctx.fillRect(10,-2,1.5,3); }
 
+    // selection ring
     if(u.selected){ ctx.strokeStyle='#d7f5ff'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(0,0,u.r+3,0,Math.PI*2); ctx.stroke(); }
 
     ctx.restore();
+    // HP bar
     ctx.fillStyle='#0e121d'; ctx.fillRect(u.x-10,u.y-16,20,4);
     ctx.fillStyle='#36d399'; ctx.fillRect(u.x-10,u.y-16,20*(u.hp/u.max),4);
   }
@@ -659,10 +716,8 @@
     // bullets
     for(const b of world.bullets){
       if(b.ballistic){
-        // grenade sprite
         ctx.fillStyle='#f0e06b';
         ctx.beginPath(); ctx.arc(b.x,b.y,3,0,Math.PI*2); ctx.fill();
-        // faint trail
         ctx.fillStyle='rgba(240,224,107,.25)';
         ctx.beginPath(); ctx.arc(b.x,b.y+3,2,0,Math.PI*2); ctx.fill();
       }else{
@@ -688,11 +743,40 @@
       const r=8+40*k, a=1-k;
       ctx.strokeStyle=f.color; ctx.lineWidth=2*a;
       ctx.beginPath(); ctx.arc(f.x,f.y,r,0,Math.PI*2); ctx.stroke();
+      // small crosshair lines
       ctx.beginPath(); ctx.moveTo(f.x-6,f.y); ctx.lineTo(f.x-2,f.y); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(f.x+2,f.y); ctx.lineTo(f.x+6,f.y); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(f.x,f.y-6); ctx.lineTo(f.x,f.y-2); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(f.x,f.y+2); ctx.lineTo(f.x,f.y+6); ctx.stroke();
     }
+  }
+
+  // -------- Selection HUD logic --------
+  function updateSelectionHUD(){
+    const arr = [...world.selection].filter(u=>u.hp>0);
+    selCountEl.textContent = arr.length.toString();
+    selGridEl.innerHTML = '';
+    for(const u of arr){
+      const tile = document.createElement('div');
+      tile.className = 'tile ' + (u.unitType==='grenadier' ? 'gren' : 'rifle');
+      tile.title = `${u.unitType} • HP ${Math.max(0,Math.ceil(u.hp))}/${u.max}`;
+      tile.textContent = u.unitType==='grenadier' ? 'G' : 'R';
+
+      const hpWrap = document.createElement('div');
+      hpWrap.className = 'hpbar';
+      const hpFill = document.createElement('span');
+      hpFill.style.width = `${Math.max(0, (u.hp/u.max)*100)}%`;
+      hpWrap.appendChild(hpFill);
+      tile.appendChild(hpWrap);
+
+      selGridEl.appendChild(tile);
+    }
+  }
+  function flashOrder(text){
+    orderFlash.textContent = `Order: ${text}`;
+    orderFlash.classList.add('show');
+    if(orderFlashTimer) clearTimeout(orderFlashTimer);
+    orderFlashTimer = setTimeout(()=>orderFlash.classList.remove('show'), 700);
   }
 
   // -------- Render --------
@@ -710,7 +794,7 @@
 
     if(world.selBox){ const s=world.selBox; ctx.setLineDash([6,4]); ctx.strokeStyle='#8ab4ff'; ctx.strokeRect(s.x,s.y,s.w,s.h); ctx.setLineDash([]); }
 
-    // HUD
+    // HUD text
     ctx.fillStyle='#ffffff'; ctx.font='bold 14px system-ui';
     const p=world.units.filter(u=>u.f===F.PLAYER).length, e=world.units.filter(u=>u.f===F.ENEMY).length;
     ctx.fillText(`Credits: ${world.resources.credits}  |  Troops: ${p}  |  Hostiles: ${e}`,10,20);

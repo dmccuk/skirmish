@@ -7,7 +7,7 @@
   <style>
     html,body{height:100%;margin:0;background:#0b0e16;color:#e6e8ef;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
     #ui{position:fixed;left:0;right:0;top:0;padding:8px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
-        background:linear-gradient(180deg,rgba(11,14,22,.9),rgba(11,14,22,0)) ;font-size:14px;z-index:2}
+        background:linear-gradient(180deg,rgba(11,14,22,.9),rgba(11,14,22,0));font-size:14px;z-index:2}
     .pill{background:#121827;border:1px solid #1e2639;padding:6px 10px;border-radius:999px}
     #wrap{height:100%;display:grid;place-items:center}
     canvas{touch-action:none;border:1px solid #1e2639;border-radius:12px;background:#0f1424;
@@ -16,19 +16,23 @@
     #panel{background:#0f1424;border:1px solid #1e2639;padding:24px;border-radius:16px;text-align:center;max-width:520px}
     button{background:#1b2a4a;border:1px solid #2a3b65;color:#e6e8ef;padding:10px 14px;border-radius:10px;cursor:pointer}
     #btns{margin-left:auto;display:flex;gap:8px}
+    input[type=file]{display:none}
+    .spacer{flex:1 1 0}
   </style>
 </head>
 <body>
   <div id="ui">
-    <div class="pill"><b>Army Skirmish</b> — tap ground to move, tap enemy to attack</div>
-    <div class="pill">Drag to box-select • Trees block shots • Grenadiers have explosive attacks • Fog of war active</div>
-    <div id="btns">
-      <button id="buildRifleman">Build Rifleman (50)</button>
-      <button id="buildGrenadier">Build Grenadier (100)</button>
-      <button id="selectAll">Select all</button>
-      <button id="restart">Restart</button>
-    </div>
+    <div class="pill"><b>Army Skirmish</b> — tap ground to move (green), tap enemy to attack (red)</div>
+    <div class="pill">Drag to box-select • Trees block shots • Fog of war</div>
+    <div class="spacer"></div>
+    <button id="terrainBtn">Use image terrain</button>
+    <input id="terrainFile" type="file" accept="image/*" />
+    <button id="buildRifleman">Build Rifleman (50)</button>
+    <button id="buildGrenadier">Build Grenadier (100)</button>
+    <button id="selectAll">Select all</button>
+    <button id="restart">Restart</button>
   </div>
+
   <div id="wrap"><canvas id="c" width="960" height="600"></canvas></div>
 
   <div id="overlay">
@@ -50,45 +54,63 @@
   const btnRestart=document.getElementById('restart');
   const btnBuildRifleman=document.getElementById('buildRifleman');
   const btnBuildGrenadier=document.getElementById('buildGrenadier');
+  const terrainBtn=document.getElementById('terrainBtn');
+  const terrainFile=document.getElementById('terrainFile');
   const canvas=ctx.canvas;
 
+  // --- Custom cursors (SVG data URIs) ---
+  const greenTarget = makeCursor('#27e36a');
+  const redTarget   = makeCursor('#ff4d5a');
+  const defaultCursor = 'crosshair';
+
+  function makeCursor(color){
+    const svg = encodeURIComponent(`
+      <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">
+        <circle cx="16" cy="16" r="10" fill="none" stroke="${color}" stroke-width="2"/>
+        <line x1="16" y1="1" x2="16" y2="7" stroke="${color}" stroke-width="2"/>
+        <line x1="16" y1="25" x2="16" y2="31" stroke="${color}" stroke-width="2"/>
+        <line x1="1" y1="16" x2="7" y2="16" stroke="${color}" stroke-width="2"/>
+        <line x1="25" y1="16" x2="31" y2="16" stroke="${color}" stroke-width="2"/>
+        <circle cx="16" cy="16" r="2" fill="${color}"/>
+      </svg>`);
+    return `url("data:image/svg+xml,${svg}") 16 16, crosshair`;
+  }
+
   // -------- World --------
-  let world;
   const F={PLAYER:1,ENEMY:2};
-  const BUILDING_TYPES = {BASE: 'base', BARRACKS: 'barracks'};
+  const BUILDING_TYPES = {BASE:'base'};
+  let world;
+
   function reset(){
     world={
-      t:0, units:[], bullets:[], trees:[], buildings:[], selection:new Set(), selBox:null,
+      tAccum:0, time:0,
+      units:[], bullets:[], trees:[], buildings:[],
+      selection:new Set(), selBox:null,
       ended:false, stats:{lost:0,kills:0,timeStart:performance.now()},
-      fogOfWar:null, revealed:new Set(), resources: {credits: 500}
+      fogRevealed:new Set(), resources:{credits:500},
+      terrainImg:null, terrainPattern:null, clickFx:[],
     };
-    // Initialize fog of war
-    world.fogOfWar = document.createElement('canvas');
-    world.fogOfWar.width = W;
-    world.fogOfWar.height = H;
-    const fogCtx = world.fogOfWar.getContext('2d');
-    fogCtx.fillStyle = '#000000';
-    fogCtx.fillRect(0, 0, W, H);
-    // simple grassy terrain blobs
-    world.grass=Array.from({length:160},()=>({x:Math.random()*W,y:Math.random()*H,r:30+Math.random()*80,a:0.06+Math.random()*0.08}));
-    // Add some colorful terrain features
-    world.terrain=Array.from({length:30},()=>({
-      x:Math.random()*W, y:Math.random()*H, r:20+Math.random()*40,
-      type:Math.random()<0.5?'dirt':'rock', color:Math.random()<0.5?'#4a3d2a':'#5a5a5a'
-    }));
-    // forests
+
+    // Procedural terrain seeds (fallback)
+    world.grass = Array.from({length:140},()=>({x:Math.random()*W,y:Math.random()*H,r:30+Math.random()*70,a:0.06+Math.random()*0.09}));
+    world.terrain = Array.from({length:22},()=>({x:Math.random()*W,y:Math.random()*H,r:20+Math.random()*40,color:Math.random()<.5?'#4a3d2a':'#6a6a6a'}));
+
+    // Forests
     forest(260,220,16,90); forest(520,420,20,100); forest(740,180,18,85);
-    // player base
-    world.buildings.push({type:BUILDING_TYPES.BASE, f:F.PLAYER, x:80, y:480, w:40, h:30, hp:200, max:200, production:null, productionTime:0});
-    
-    // player squad (6 riflemen + 2 grenadiers)
+
+    // Player base
+    world.buildings.push({type:BUILDING_TYPES.BASE, f:F.PLAYER, x:80, y:480, w:46, h:34, hp:220, max:220, production:null, productionTime:0});
+
+    // Player squad (6 rifle + 2 grenadiers)
     for(let i=0;i<6;i++){ const u=spawn(120+(i%3)*22,440+Math.floor(i/3)*26,F.PLAYER,'rifleman'); u.selected=true; world.selection.add(u); }
     for(let i=0;i<2;i++){ const u=spawn(200+(i*22),440,F.PLAYER,'grenadier'); u.selected=true; world.selection.add(u); }
-    // enemy squads (6 riflemen + 2 grenadiers)
+
+    // Enemies
     for(let i=0;i<6;i++) spawn(760+(i%3)*24,160+Math.floor(i/3)*24,F.ENEMY,'rifleman');
     for(let i=0;i<2;i++) spawn(760+(i*24),220,F.ENEMY,'grenadier');
     for(let i=0;i<4;i++) spawn(820+(i%2)*24,320+Math.floor(i/2)*24,F.ENEMY,'rifleman');
   }
+
   function forest(cx,cy,count,spread){
     for(let i=0;i<count;i++){
       const a=Math.random()*Math.PI*2,d=(Math.random()**0.8)*spread;
@@ -96,30 +118,41 @@
       world.trees.push({x,y,r});
     }
   }
+
   function spawn(x,y,f,unitType='rifleman'){
-    const baseStats = {
-      rifleman: {hp:48,max:48,range:115,dmg:9,speed:1.7},
-      grenadier: {hp:60,max:60,range:90,dmg:25,speed:1.4}
-    };
-    const stats = baseStats[unitType] || baseStats.rifleman;
+    const base = {
+      rifleman:  {hp:48,max:48,range:115,dmg:9, s:1.7},
+      grenadier: {hp:60,max:60,range:90, dmg:25,s:1.4}
+    }[unitType];
     const u={
-      type:'unit',f,x,y,vx:0,vy:0,r:8,s:stats.speed,hp:stats.hp,max:stats.max,
-      range:stats.range,cd:0,dmg:stats.dmg,selected:false,wander:Math.random()*6.28,
-      target:null,unitType:unitType
+      type:'unit', f, x, y, r:8,
+      hp:base.hp, max:base.max, range:base.range, dmg:base.dmg, s:base.s,
+      cd:0, unitType,
+      target:null, vx:0, vy:0, facing:0, walk:0, // facing radians, walk phase
+      selected:false, wander:Math.random()*6.28
     };
-    world.units.push(u);return u;
+    world.units.push(u); return u;
   }
 
-  // -------- Input (mouse + touch via Pointer Events) --------
-  let pointer={x:0,y:0,down:false,dragStart:null,dragging:false};
+  // -------- Input (pointer) + cursor logic --------
+  let pointer={x:0,y:0,down:false,dragStart:null,dragging:false, overEnemy:false};
   const DRAG_THRESH=8;
+
   canvas.addEventListener('pointerdown',e=>{
     canvas.setPointerCapture(e.pointerId);
     const p=pos(e); pointer.x=p.x; pointer.y=p.y; pointer.down=true; pointer.dragStart={x:p.x,y:p.y}; pointer.dragging=false;
     world.selBox={x:p.x,y:p.y,w:0,h:0};
   });
+
   canvas.addEventListener('pointermove',e=>{
     const p=pos(e); pointer.x=p.x; pointer.y=p.y;
+    // update cursor: if selection exists and hovering an enemy -> red cursor, else green cursor
+    const hasSelection = world.selection.size>0;
+    pointer.overEnemy = !!unitAt(p.x,p.y,F.ENEMY);
+    if (hasSelection && pointer.overEnemy) canvas.style.cursor = redTarget;
+    else if (hasSelection) canvas.style.cursor = greenTarget;
+    else canvas.style.cursor = defaultCursor;
+
     if(pointer.down && pointer.dragStart){
       const dx=p.x-pointer.dragStart.x, dy=p.y-pointer.dragStart.y;
       if(!pointer.dragging && (Math.abs(dx)>DRAG_THRESH||Math.abs(dy)>DRAG_THRESH)) pointer.dragging=true;
@@ -129,128 +162,146 @@
       }
     }
   });
+
   canvas.addEventListener('pointerup',e=>{
     const p=pos(e); pointer.down=false;
+    const hasSel = world.selection.size>0;
     if(pointer.dragging && world.selBox){
-      // finish box-select
       world.selection.forEach(u=>u.selected=false); world.selection.clear();
       world.units.forEach(u=>{ if(u.f===F.PLAYER && circleInRect(u.x,u.y,u.r,world.selBox)){ u.selected=true; world.selection.add(u);} });
     } else {
-      // tap logic
       const enemy = unitAt(p.x,p.y,F.ENEMY);
       const friendly = unitAt(p.x,p.y,F.PLAYER);
-      if(enemy && world.selection.size){ world.selection.forEach(u=>u.target=enemy); }
-      else if(friendly){ world.selection.forEach(u=>u.selected=false); world.selection.clear(); friendly.selected=true; world.selection.add(friendly); }
-      else { // ground tap -> move
+      if(enemy && hasSel){
+        world.selection.forEach(u=>u.target=enemy);
+        addClickFx(p.x,p.y,'#ff4d5a'); // red click effect
+      }
+      else if(friendly){
+        world.selection.forEach(u=>u.selected=false); world.selection.clear();
+        friendly.selected=true; world.selection.add(friendly);
+      }
+      else if(hasSel){ // ground move
         world.selection.forEach(u=>u.target={x:p.x,y:p.y,dummy:true});
+        addClickFx(p.x,p.y,'#27e36a'); // green click effect
       }
     }
     world.selBox=null; pointer.dragStart=null; pointer.dragging=false;
   });
+
   canvas.addEventListener('contextmenu', e=>e.preventDefault(), {passive:false});
+
+  function addClickFx(x,y,color){
+    world.clickFx.push({x,y,color,age:0,life:0.5});
+  }
+
   function pos(e){ const r=canvas.getBoundingClientRect(); return {x:(e.clientX-r.left), y:(e.clientY-r.top)}; }
 
+  // -------- Buttons --------
   btnSelectAll.onclick=()=>{
     world.selection.forEach(u=>u.selected=false); world.selection.clear();
     world.units.forEach(u=>{ if(u.f===F.PLAYER){ u.selected=true; world.selection.add(u);} });
   };
   btnRestart.onclick=()=>location.reload();
-  
-  btnBuildRifleman.onclick=()=>{
-    const base = world.buildings.find(b => b.f === F.PLAYER && b.type === BUILDING_TYPES.BASE && b.hp > 0);
-    if(base && !base.production && world.resources.credits >= 50){
-      world.resources.credits -= 50;
-      base.production = 'rifleman';
-      base.productionTime = 3;
+
+  btnBuildRifleman.onclick=()=>queueBuild('rifleman',50,3);
+  btnBuildGrenadier.onclick=()=>queueBuild('grenadier',100,4);
+
+  function queueBuild(kind,cost,time){
+    const base = world.buildings.find(b => b.f===F.PLAYER && b.type===BUILDING_TYPES.BASE && b.hp>0);
+    if(base && !base.production && world.resources.credits>=cost){
+      world.resources.credits -= cost;
+      base.production = kind;
+      base.productionTime = time;
     }
+  }
+
+  // Terrain upload
+  terrainBtn.onclick = () => terrainFile.click();
+  terrainFile.onchange = (e)=>{
+    const file = e.target.files?.[0]; if(!file) return;
+    const img = new Image(); img.onload = ()=>{ world.terrainImg = img; world.terrainPattern=null; };
+    img.src = URL.createObjectURL(file);
   };
-  
-  btnBuildGrenadier.onclick=()=>{
-    const base = world.buildings.find(b => b.f === F.PLAYER && b.type === BUILDING_TYPES.BASE && b.hp > 0);
-    if(base && !base.production && world.resources.credits >= 100){
-      world.resources.credits -= 100;
-      base.production = 'grenadier';
-      base.productionTime = 4;
-    }
-  };
+
+  // Drag-drop image onto canvas
+  ;['dragenter','dragover'].forEach(ev=>canvas.addEventListener(ev, e=>{ e.preventDefault(); }));
+  canvas.addEventListener('drop', e=>{
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0]; if(!file || !file.type.startsWith('image/')) return;
+    const img = new Image(); img.onload = ()=>{ world.terrainImg = img; world.terrainPattern=null; };
+    img.src = URL.createObjectURL(file);
+  });
 
   // -------- Helpers --------
   const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
   function unitAt(x,y,filt){ for(const u of world.units){ if(filt && u.f!==filt) continue; if(Math.hypot(x-u.x,y-u.y)<=u.r+3) return u; } return null; }
   function circleInRect(cx,cy,r,rect){ const rx=clamp(cx,rect.x,rect.x+rect.w), ry=clamp(cy,rect.y,rect.y+rect.h);
     return (cx-r<=rect.x+rect.w && cx+r>=rect.x && cy-r<=rect.y+rect.h && cy+r>=rect.y && ((cx-rx)**2+(cy-ry)**2)<=r*r); }
-  function blocked(ax,ay,bx,by){ // LoS blocked by trees?
+  function blocked(ax,ay,bx,by){
     for(const t of world.trees){
       const dx=bx-ax, dy=by-ay, L2=dx*dx+dy*dy||1, u=clamp(((t.x-ax)*dx+(t.y-ay)*dy)/L2,0,1);
       const px=ax+u*dx, py=ay+u*dy, d2=(px-t.x)**2+(py-t.y)**2;
       if(d2 <= (t.r+3)*(t.r+3)) return true;
     } return false;
   }
-  
-  function updateFogOfWar(){
-    const visionRadius = 80; // How far units can see
-    
-    // Clear revealed areas around player units
-    for(const u of world.units){
-      if(u.f === F.PLAYER && u.hp > 0){
-        const x = Math.floor(u.x);
-        const y = Math.floor(u.y);
-        
-        // Mark area as revealed
-        for(let dx = -visionRadius; dx <= visionRadius; dx += 2){
-          for(let dy = -visionRadius; dy <= visionRadius; dy += 2){
-            if(dx*dx + dy*dy <= visionRadius*visionRadius){
-              const key = `${x+dx},${y+dy}`;
-              world.revealed.add(key);
-            }
-          }
+
+  // FoW (simple revealed set)
+  const VISION=80;
+  function revealAround(x,y){
+    for(let dx=-VISION; dx<=VISION; dx+=4){
+      for(let dy=-VISION; dy<=VISION; dy+=4){
+        if(dx*dx+dy*dy<=VISION*VISION){
+          world.fogRevealed.add(((x+dx)|0)+','+((y+dy)|0));
         }
       }
     }
   }
-  
-  function isRevealed(x, y){
-    const key = `${Math.floor(x)},${Math.floor(y)}`;
-    return world.revealed.has(key);
-  }
+  function revealed(x,y){ return world.fogRevealed.has((x|0)+','+(y|0)); }
 
   // -------- Game Step --------
   function step(dt){
-    // Update fog of war
-    updateFogOfWar();
-    
-    // cooldowns
-    world.units.forEach(u=>{ if(u.cd>0) u.cd-=dt; });
+    world.time += dt;
+    world.tAccum += dt;
 
-    // simple enemy behavior
+    // Income tick every ~2s
+    if(world.tAccum>=2){ world.resources.credits+=10; world.tAccum=0; }
+
+    // Cooldowns & facing/walk anim
+    for(const u of world.units){
+      if(u.cd>0) u.cd-=dt;
+      // reveal around player units
+      if(u.f===F.PLAYER && u.hp>0) revealAround(u.x,u.y);
+
+      // Facing and walk phase
+      const speed = Math.hypot(u.vx,u.vy);
+      if(speed>0.01){ u.facing = Math.atan2(u.vy,u.vx); u.walk += dt * (4 + speed*4); }
+      else { u.walk += dt*2; } // idle bob
+    }
+
+    // Enemy seek
     for(const u of world.units){
       if(u.f!==F.ENEMY || u.hp<=0) continue;
       if(!u.target || (u.target.hp!==undefined && u.target.hp<=0)){
-        // find nearest visible player in radius
         let best=null,bd2=Infinity;
         for(const p of world.units){ if(p.f!==F.PLAYER||p.hp<=0) continue;
           const d2=(p.x-u.x)**2+(p.y-u.y)**2;
           if(d2<bd2 && Math.sqrt(d2)<190 && !blocked(u.x,u.y,p.x,p.y)){ bd2=d2; best=p; } }
         if(best) u.target=best;
-        else { // wander idle
-          u.wander += (Math.random()-0.5)*0.2;
-          u.x += Math.cos(u.wander)*0.6*60*dt; u.y += Math.sin(u.wander)*0.6*60*dt;
-        }
+        else { u.wander += (Math.random()-0.5)*0.2; u.x += Math.cos(u.wander)*0.6*60*dt; u.y += Math.sin(u.wander)*0.6*60*dt; }
       }
     }
 
-    // move/attack
+    // Movement / fire
     for(const u of world.units){
       if(u.hp<=0) continue;
-      let t=u.target;
-      if(t && t.hp!==undefined && t.hp<=0) t=u.target=null;
+      let t=u.target; if(t && t.hp!==undefined && t.hp<=0) t=u.target=null;
       if(t){
         const tx=t.x, ty=t.y, dist=Math.hypot(tx-u.x,ty-u.y);
         const inRange=dist<=u.range, canShoot=inRange && !blocked(u.x,u.y,tx,ty);
         if(t.dummy){ moveToward(u,tx,ty,dt); if(dist<6) u.target=null; }
         else if(canShoot){ if(u.cd<=0){ fire(u,t); u.cd=0.5+Math.random()*0.2; } }
         else { moveToward(u,tx,ty,dt); }
-      }else{
+      } else {
         u.vx*=0.9; u.vy*=0.9; u.x+=u.vx*60*dt; u.y+=u.vy*60*dt;
       }
       // tree push-out
@@ -261,322 +312,221 @@
       u.x=clamp(u.x,8,W-8); u.y=clamp(u.y,8,H-8);
     }
 
-    // bullets
+    // Bullets
     for(let i=world.bullets.length-1;i>=0;i--){
       const b=world.bullets[i], ang=Math.atan2(b.ty-b.y,b.tx-b.x);
       const nx=Math.cos(ang)*b.spd*60*dt, ny=Math.sin(ang)*b.spd*60*dt;
-      // early stop if newly blocked
-      if(blocked(b.ox,b.oy,b.x+nx,b.y+ny)){ 
-        if(b.explosive) explode(b.x,b.y,b.blastRadius,b.dmg,b.f);
-        world.bullets.splice(i,1); continue; 
-      }
+      if(blocked(b.ox,b.oy,b.x+nx,b.y+ny)){ if(b.explosive) explode(b.x,b.y,b.blastRadius,b.dmg,b.f); world.bullets.splice(i,1); continue; }
       b.x+=nx; b.y+=ny; b.life-=dt;
       const t=b.target;
-      if(t && t.hp>0 && Math.hypot(b.x-t.x,b.y-t.y) < t.r+3){ 
-        if(b.explosive) {
-          explode(b.x,b.y,b.blastRadius,b.dmg,b.f);
-        } else {
-          t.hp-=b.dmg;
-        }
-        world.bullets.splice(i,1); continue; 
+      if(t && t.hp>0 && Math.hypot(b.x-t.x,b.y-t.y)<t.r+3){
+        if(b.explosive) explode(b.x,b.y,b.blastRadius,b.dmg,b.f); else t.hp-=b.dmg;
+        world.bullets.splice(i,1); continue;
       }
-      if(b.life<=0) {
-        if(b.explosive) explode(b.x,b.y,b.blastRadius,b.dmg,b.f);
-        world.bullets.splice(i,1);
-      }
+      if(b.life<=0){ if(b.explosive) explode(b.x,b.y,b.blastRadius,b.dmg,b.f); world.bullets.splice(i,1); }
     }
 
-    // explosions
-    if(world.explosions){
-      for(let i=world.explosions.length-1;i>=0;i--){
-        const e=world.explosions[i];
-        e.life-=dt;
-        if(e.life<=0) world.explosions.splice(i,1);
-      }
-    }
-    
-    // building production
+    // Explosions fade
+    if(world.explosions){ for(let i=world.explosions.length-1;i>=0;i--){ const e=world.explosions[i]; e.life-=dt; if(e.life<=0) world.explosions.splice(i,1); } }
+
+    // Building production
     for(const b of world.buildings){
-      if(b.production && b.hp > 0){
+      if(b.production && b.hp>0){
         b.productionTime -= dt;
-        if(b.productionTime <= 0){
-          // Spawn unit near building
-          const spawnX = b.x + b.w/2 + (Math.random()-0.5)*20;
-          const spawnY = b.y - 20;
-          const newUnit = spawn(spawnX, spawnY, b.f, b.production);
-          // Auto-select newly built units
-          if(b.f === F.PLAYER){
-            newUnit.selected = true;
-            world.selection.add(newUnit);
-          }
-          b.production = null;
-          b.productionTime = 0;
+        if(b.productionTime<=0){
+          const spawnX=b.x+b.w/2+(Math.random()-0.5)*20, spawnY=b.y-20;
+          const nu=spawn(spawnX,spawnY,b.f,b.production); nu.selected=true; world.selection.add(nu);
+          b.production=null; b.productionTime=0;
         }
       }
     }
-    
-    // Credit income (every 2 seconds)
-    world.t %= 2; // Reset every 2 seconds
-    if(world.t < dt){
-      world.resources.credits += 10; // 10 credits every 2 seconds
+
+    // Click FX progress
+    for(let i=world.clickFx.length-1;i>=0;i--){
+      const f=world.clickFx[i]; f.age+=dt; if(f.age>=f.life) world.clickFx.splice(i,1);
     }
 
-    // deaths + win/lose
-    for(let i=world.units.length-1;i>=0;i--){
-      const u=world.units[i]; if(u.hp>0) continue;
-      if(u.f===F.PLAYER) world.stats.lost++; else world.stats.kills++;
-      world.units.splice(i,1);
-    }
+    // Deaths + end
+    for(let i=world.units.length-1;i>=0;i--){ const u=world.units[i]; if(u.hp>0) continue;
+      if(u.f===F.PLAYER) world.stats.lost++; else world.stats.kills++; world.units.splice(i,1); }
     const pAlive=world.units.some(u=>u.f===F.PLAYER), eAlive=world.units.some(u=>u.f===F.ENEMY);
     if(!pAlive||!eAlive) endGame(pAlive && !eAlive);
   }
+
   function moveToward(u,tx,ty,dt){
     const ang=Math.atan2(ty-u.y,tx-u.x), sp=u.s;
     let vx=Math.cos(ang)*sp, vy=Math.sin(ang)*sp;
-    // try sidestep if immediate collision
     let blockedMove=false;
     for(const tr of world.trees){ const dx=(u.x+vx*60*dt)-tr.x, dy=(u.y+vy*60*dt)-tr.y; if(Math.hypot(dx,dy)<tr.r+u.r){ blockedMove=true; break; } }
     if(blockedMove){ const side=Math.random()<.5?Math.PI/2:-Math.PI/2; vx=Math.cos(ang+side)*sp*.85; vy=Math.sin(ang+side)*sp*.85; }
     u.vx=vx; u.vy=vy; u.x+=vx*60*dt; u.y+=vy*60*dt;
   }
+
   function fire(from,target){
-    if(from.unitType === 'grenadier') {
-      // Grenade with area damage
+    if(from.unitType==='grenadier'){
       world.bullets.push({x:from.x,y:from.y,ox:from.x,oy:from.y,tx:target.x,ty:target.y,target,
-                          spd:4.0,dmg:from.dmg,life:1.2, f:from.f, explosive:true, blastRadius:35});
+                          spd:4.0,dmg:from.dmg,life:1.2,f:from.f,explosive:true,blastRadius:35});
     } else {
-      // Regular bullet
       world.bullets.push({x:from.x,y:from.y,ox:from.x,oy:from.y,tx:target.x,ty:target.y,target,
-                          spd:5.5,dmg:from.dmg,life:.6, f:from.f, explosive:false});
+                          spd:5.5,dmg:from.dmg,life:.6,f:from.f,explosive:false});
     }
   }
-  
+
   function explode(x,y,radius,dmg,faction){
-    // Add explosion effect
     world.explosions = world.explosions || [];
     world.explosions.push({x,y,radius,life:0.3,maxLife:0.3});
-    
-    // Damage all units in blast radius
     for(const u of world.units){
-      if(u.f === faction || u.hp <= 0) continue; // Don't damage same faction
-      const dist = Math.hypot(u.x-x, u.y-y);
-      if(dist <= radius){
-        const damage = Math.max(1, dmg * (1 - dist/radius)); // Damage falls off with distance
-        u.hp -= damage;
+      if(u.f===faction || u.hp<=0) continue;
+      const dist=Math.hypot(u.x-x,u.y-y);
+      if(dist<=radius){ const dd=Math.max(1, dmg*(1-dist/radius)); u.hp-=dd; }
+    }
+  }
+
+  // -------- Drawing helpers --------
+  function drawTerrain(){
+    // If a user image exists: draw it "cover"-style
+    if(world.terrainImg){
+      const img = world.terrainImg;
+      const iw=img.naturalWidth, ih=img.naturalHeight, ir=iw/ih, cr=W/H;
+      let dw=W, dh=H, sx=0, sy=0, sw=iw, sh=ih;
+      if(ir>cr){ // image wider
+        sw = ih*cr; sx = (iw - sw)/2;
+      } else { // image taller
+        sh = iw/cr; sy = (ih - sh)/2;
       }
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
+      return;
     }
+    // Procedural fallback (soft grass + patches)
+    ctx.fillStyle='#355a2f'; ctx.fillRect(0,0,W,H);
+    for(const g of world.grass){ ctx.fillStyle=`rgba(84,140,72,${g.a})`; ctx.beginPath(); ctx.arc(g.x,g.y,g.r,0,Math.PI*2); ctx.fill(); }
+    for(const t of world.terrain){ ctx.fillStyle=t.color; ctx.beginPath(); ctx.arc(t.x,t.y,t.r,0,Math.PI*2); ctx.fill(); }
   }
 
-  // -------- Sprite System --------
-  function createSoldierSprite(faction, unitType = 'rifleman') {
-    const size = 16;
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    
-    // Clear background
-    ctx.clearRect(0, 0, size, size);
-    
-    if (unitType === 'rifleman') {
-      // Body (main color)
-      ctx.fillStyle = faction === F.PLAYER ? '#4a6b8a' : '#8a4a4a';
-      ctx.fillRect(6, 8, 4, 6);
-      
-      // Head
-      ctx.fillStyle = '#f4c2a1';
-      ctx.fillRect(7, 4, 2, 3);
-      
-      // Helmet
-      ctx.fillStyle = faction === F.PLAYER ? '#2d4a6b' : '#6b2d2d';
-      ctx.fillRect(6, 3, 4, 2);
-      
-      // Arms
-      ctx.fillStyle = '#4a6b8a';
-      ctx.fillRect(4, 9, 2, 4);
-      ctx.fillRect(10, 9, 2, 4);
-      
-      // Legs
-      ctx.fillStyle = '#2d4a6b';
-      ctx.fillRect(6, 14, 2, 2);
-      ctx.fillRect(8, 14, 2, 2);
-      
-      // Weapon (rifle)
-      ctx.fillStyle = '#3a3a3a';
-      ctx.fillRect(11, 6, 3, 1);
-      ctx.fillRect(13, 5, 1, 3);
-    } else if (unitType === 'grenadier') {
-      // Body (main color)
-      ctx.fillStyle = faction === F.PLAYER ? '#4a6b8a' : '#8a4a4a';
-      ctx.fillRect(6, 8, 4, 6);
-      
-      // Head
-      ctx.fillStyle = '#f4c2a1';
-      ctx.fillRect(7, 4, 2, 3);
-      
-      // Helmet with visor
-      ctx.fillStyle = faction === F.PLAYER ? '#2d4a6b' : '#6b2d2d';
-      ctx.fillRect(6, 3, 4, 2);
-      ctx.fillStyle = '#1a1a1a';
-      ctx.fillRect(7, 4, 2, 1);
-      
-      // Arms
-      ctx.fillStyle = '#4a6b8a';
-      ctx.fillRect(4, 9, 2, 4);
-      ctx.fillRect(10, 9, 2, 4);
-      
-      // Legs
-      ctx.fillStyle = '#2d4a6b';
-      ctx.fillRect(6, 14, 2, 2);
-      ctx.fillRect(8, 14, 2, 2);
-      
-      // Grenade launcher
-      ctx.fillStyle = '#3a3a3a';
-      ctx.fillRect(11, 6, 4, 1);
-      ctx.fillRect(14, 5, 1, 3);
-      // Grenade
-      ctx.fillStyle = '#8a8a2a';
-      ctx.fillRect(15, 6, 1, 1);
-    }
-    
-    return canvas;
-  }
-
-  // -------- Rendering --------
-  function draw(){
-    // Base terrain with VERY BRIGHT green color - ALWAYS VISIBLE
-    ctx.fillStyle='#8dcb8d'; ctx.fillRect(0,0,W,H);
-    
-    // Add some brown dirt patches
-    for(let i=0;i<20;i++){
-      const x=Math.random()*W, y=Math.random()*H, r=40+Math.random()*60;
-      ctx.fillStyle='#cbad8a';
-      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
-    }
-    
-    // Add grass patches - VERY bright and visible
-    for(const g of world.grass){ ctx.fillStyle=`rgba(102,170,90,${g.a*3})`; ctx.beginPath(); ctx.arc(g.x,g.y,g.r,0,Math.PI*2); ctx.fill(); }
-    
-    // Add terrain features (dirt and rock patches)
-    for(const t of world.terrain){
-      ctx.fillStyle = t.color;
-      ctx.beginPath(); ctx.arc(t.x,t.y,t.r,0,Math.PI*2); ctx.fill();
-    }
-    // trees (only in revealed areas)
+  function drawTrees(){
     for(const t of world.trees){
-      if(isRevealed(t.x, t.y)){
-        // Tree trunk
-        ctx.fillStyle='#8b4513'; ctx.beginPath(); ctx.arc(t.x,t.y+t.r*0.55,3,0,Math.PI*2); ctx.fill();
-        // Tree canopy - more vibrant green
-        const grad=ctx.createRadialGradient(t.x-2,t.y-2,2,t.x,t.y,t.r); 
-        grad.addColorStop(0,'#4a8b4a'); 
-        grad.addColorStop(0.7,'#2d6b2d'); 
-        grad.addColorStop(1,'#1a4a1a');
-        ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(t.x,t.y,t.r,0,Math.PI*2); ctx.fill();
-      }
+      if(!revealed(t.x,t.y)) continue;
+      ctx.fillStyle='rgba(0,0,0,.35)'; ctx.beginPath(); ctx.arc(t.x+2,t.y+2,t.r,0,Math.PI*2); ctx.fill();
+      const grad=ctx.createRadialGradient(t.x-2,t.y-2,2,t.x,t.y,t.r);
+      grad.addColorStop(0,'#3f7a3f'); grad.addColorStop(1,'#235a29');
+      ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(t.x,t.y,t.r,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#5a3a21'; ctx.beginPath(); ctx.arc(t.x,t.y+t.r*0.6,3,0,Math.PI*2); ctx.fill();
     }
-    // buildings (only in revealed areas, except player buildings)
+  }
+
+  function drawBuildings(){
     for(const b of world.buildings){
-      if(b.f === F.PLAYER || isRevealed(b.x, b.y)){
-        // Building shadow
-        ctx.fillStyle='rgba(0,0,0,.4)'; ctx.fillRect(b.x+2,b.y+2,b.w,b.h);
-        
-        // Building body - more vibrant colors
-        ctx.fillStyle = b.f === F.PLAYER ? '#4a8bd3' : '#d34a4a';
-        ctx.fillRect(b.x, b.y, b.w, b.h);
-        
-        // Building details
-        ctx.fillStyle = b.f === F.PLAYER ? '#2d4a6b' : '#6b2d2d';
-        ctx.fillRect(b.x+2, b.y+2, b.w-4, 4);
-        ctx.fillRect(b.x+2, b.y+b.h-6, b.w-4, 4);
-        
-        // Production indicator
-        if(b.production){
-          const progress = 1 - (b.productionTime / (b.production === 'rifleman' ? 3 : 4));
-          ctx.fillStyle='#36d399';
-          ctx.fillRect(b.x, b.y-6, b.w * progress, 4);
-        }
-        
-        // Health bar
-        ctx.fillStyle='#0e121d'; ctx.fillRect(b.x, b.y-12, b.w, 4);
-        ctx.fillStyle='#36d399'; ctx.fillRect(b.x, b.y-12, b.w*(b.hp/b.max), 4);
-      }
+      if(b.f!==F.PLAYER && !revealed(b.x,b.y)) continue;
+      ctx.fillStyle='rgba(0,0,0,.3)'; ctx.fillRect(b.x+2,b.y+2,b.w,b.h);
+      ctx.fillStyle = (b.f===F.PLAYER)?'#4a8bd3':'#d34a4a'; ctx.fillRect(b.x,b.y,b.w,b.h);
+      ctx.fillStyle = (b.f===F.PLAYER)?'#2d4a6b':'#6b2d2d'; ctx.fillRect(b.x+2,b.y+2,b.w-4,4);
+      // Production bar
+      if(b.production){ const total=(b.production==='rifleman')?3:4; const prog=1-(b.productionTime/total);
+        ctx.fillStyle='#36d399'; ctx.fillRect(b.x,b.y-6,b.w*prog,4); }
+      // HP
+      ctx.fillStyle='#0e121d'; ctx.fillRect(b.x,b.y-12,b.w,4);
+      ctx.fillStyle='#36d399'; ctx.fillRect(b.x,b.y-12,b.w*(b.hp/b.max),4);
     }
-    // NO FOG OF WAR ON TERRAIN - terrain is always fully visible
-    // Fog of war only affects units and buildings visibility
-    
-    // units (render AFTER fog of war so they're always visible)
-    for(const u of world.units){
-      if(u.f === F.PLAYER || isRevealed(u.x, u.y)){
-        // Simple colored circles instead of complex sprites
-        const unitColor = u.f === F.PLAYER ? '#4a8bd3' : '#d34a4a';
-        const unitType = u.unitType || 'rifleman';
-        
-        // Main unit body
-        ctx.fillStyle = unitColor;
-        ctx.beginPath();
-        ctx.arc(u.x, u.y, u.r, 0, Math.PI * 2);
-        ctx.fill();
-        
-        // Unit type indicator (smaller circle inside)
-        ctx.fillStyle = unitType === 'grenadier' ? '#ffaa00' : '#ffffff';
-        ctx.beginPath();
-        ctx.arc(u.x, u.y, u.r * 0.6, 0, Math.PI * 2);
-        ctx.fill();
-        
-        // Selection ring
-        if(u.selected){ 
-          ctx.strokeStyle='#d7f5ff'; 
-          ctx.lineWidth=3; 
-          ctx.beginPath(); 
-          ctx.arc(u.x,u.y,u.r+3,0,Math.PI*2); 
-          ctx.stroke(); 
-        }
-        
-        // hp bar
-        ctx.fillStyle='#0e121d'; ctx.fillRect(u.x-10,u.y-16,20,4);
-        ctx.fillStyle='#36d399'; ctx.fillRect(u.x-10,u.y-16,20*(u.hp/u.max),4);
-      }
-    }
-    
-    // bullets
+  }
+
+  // Animated soldier (tiny top-down with leg swing)
+  function drawSoldier(u){
+    const dir = u.facing; // radians
+    ctx.save();
+    ctx.translate(u.x,u.y);
+    ctx.rotate(dir);
+
+    // shadow
+    ctx.fillStyle='rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(2,3,u.r*0.9,u.r*0.6,0,0,Math.PI*2); ctx.fill();
+
+    // legs (swing using sin(walk))
+    const swing = Math.sin(u.walk)*3.2, backSwing = -Math.sin(u.walk)*3.2;
+    ctx.strokeStyle = '#1c2535'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(-2,4); ctx.lineTo(-2,4+swing); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo( 2,4); ctx.lineTo( 2,4+backSwing); ctx.stroke();
+
+    // body
+    const bodyColor = (u.f===F.PLAYER)?'#4a6b8a':'#8a4a4a';
+    ctx.fillStyle=bodyColor; ctx.fillRect(-3,-2,6,8);
+
+    // head + helmet
+    ctx.fillStyle='#f4c2a1'; ctx.fillRect(-2.2,-6,4.4,3);
+    ctx.fillStyle=(u.f===F.PLAYER)?'#2d4a6b':'#6b2d2d'; ctx.fillRect(-3,-7,6,2);
+
+    // weapon (rifle or launcher)
+    ctx.fillStyle='#303030';
+    if(u.unitType==='grenadier'){ ctx.fillRect(4,-1,6,2); ctx.fillRect(10,-2,2,4); } // launcher
+    else { ctx.fillRect(3,-1,7,1.5); ctx.fillRect(10,-2,1.5,3); } // rifle
+
+    // selection ring
+    if(u.selected){ ctx.strokeStyle='#d7f5ff'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(0,0,u.r+3,0,Math.PI*2); ctx.stroke(); }
+
+    // HP bar
+    ctx.restore();
+    ctx.fillStyle='#0e121d'; ctx.fillRect(u.x-10,u.y-16,20,4);
+    ctx.fillStyle='#36d399'; ctx.fillRect(u.x-10,u.y-16,20*(u.hp/u.max),4);
+  }
+
+  function drawBulletsExplosions(){
     for(const b of world.bullets){ ctx.fillStyle='#f8f1b8'; ctx.fillRect(b.x-2,b.y-2,4,4); }
-    // explosions
     if(world.explosions){
       for(const e of world.explosions){
-        const alpha = e.life / e.maxLife;
-        const size = e.radius * alpha;
-        const grad = ctx.createRadialGradient(e.x,e.y,0,e.x,e.y,size);
-        grad.addColorStop(0,`rgba(255,100,0,${alpha*0.8})`);
-        grad.addColorStop(0.5,`rgba(255,200,0,${alpha*0.4})`);
-        grad.addColorStop(1,`rgba(255,100,0,0)`);
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(e.x,e.y,size,0,Math.PI*2);
-        ctx.fill();
+        const a=e.life/e.maxLife, sz=e.radius*(1-a);
+        const g=ctx.createRadialGradient(e.x,e.y,0,e.x,e.y,sz);
+        g.addColorStop(0,`rgba(255,120,0,${a*.8})`);
+        g.addColorStop(.6,`rgba(255,200,0,${a*.35})`);
+        g.addColorStop(1,`rgba(255,120,0,0)`);
+        ctx.fillStyle=g; ctx.beginPath(); ctx.arc(e.x,e.y,sz,0,Math.PI*2); ctx.fill();
       }
     }
-    // selection box
+  }
+
+  function drawClickFx(){
+    for(const f of world.clickFx){
+      const k=f.age/f.life;
+      const r=8+40*k, a=1-k;
+      ctx.strokeStyle=f.color; ctx.lineWidth=2*a;
+      ctx.beginPath(); ctx.arc(f.x,f.y,r,0,Math.PI*2); ctx.stroke();
+      // small crosshair
+      ctx.beginPath(); ctx.moveTo(f.x-6,f.y); ctx.lineTo(f.x-2,f.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(f.x+2,f.y); ctx.lineTo(f.x+6,f.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(f.x,f.y-6); ctx.lineTo(f.x,f.y-2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(f.x,f.y+2); ctx.lineTo(f.x,f.y+6); ctx.stroke();
+    }
+  }
+
+  // -------- Render --------
+  function draw(){
+    // Terrain first
+    drawTerrain();
+
+    // Trees (hidden by FoW until revealed)
+    drawTrees();
+
+    // Buildings
+    drawBuildings();
+
+    // Units: player always visible; enemies only if revealed
+    for(const u of world.units){
+      if(u.f===F.PLAYER || revealed(u.x,u.y)) drawSoldier(u);
+    }
+
+    // Bullets / explosions / click effects
+    drawBulletsExplosions();
+    drawClickFx();
+
+    // Selection box
     if(world.selBox){ const s=world.selBox; ctx.setLineDash([6,4]); ctx.strokeStyle='#8ab4ff'; ctx.strokeRect(s.x,s.y,s.w,s.h); ctx.setLineDash([]); }
-    
-    // hud - bigger and whiter text
+
+    // HUD
     ctx.fillStyle='#ffffff'; ctx.font='bold 14px system-ui';
     const p=world.units.filter(u=>u.f===F.PLAYER).length, e=world.units.filter(u=>u.f===F.ENEMY).length;
     ctx.fillText(`Credits: ${world.resources.credits}  |  Troops: ${p}  |  Hostiles: ${e}`,10,20);
-    
-    // Building production status
-    const base = world.buildings.find(b => b.f === F.PLAYER && b.type === BUILDING_TYPES.BASE);
+    const base = world.buildings.find(b=>b.f===F.PLAYER && b.type===BUILDING_TYPES.BASE);
     if(base && base.production){
-      const progress = 1 - (base.productionTime / (base.production === 'rifleman' ? 3 : 4));
-      ctx.fillText(`Building: ${base.production} (${Math.round(progress*100)}%)`, 10, 40);
-    }
-    
-    // Debug info
-    const playerUnits = world.units.filter(u => u.f === F.PLAYER);
-    ctx.fillText(`Player units: ${playerUnits.length}`, 10, 60);
-    if(playerUnits.length > 0){
-      const firstUnit = playerUnits[0];
-      ctx.fillText(`First unit at: ${Math.round(firstUnit.x)}, ${Math.round(firstUnit.y)}`, 10, 80);
+      const total=(base.production==='rifleman')?3:4;
+      const prog=1-(base.productionTime/total);
+      ctx.fillText(`Building: ${base.production} (${Math.round(prog*100)}%)`,10,40);
     }
   }
 
@@ -584,7 +534,7 @@
   let last=performance.now();
   function loop(now){
     if(world.ended) return;
-    const dt=Math.min(0.033,(now-last)/1000); last=now; world.t+=dt;
+    const dt=Math.min(0.033,(now-last)/1000); last=now;
     step(dt); draw(); requestAnimationFrame(loop);
   }
   function endGame(win){

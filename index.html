@@ -444,18 +444,18 @@
 
   // -------- Rendering --------
   function draw(){
-    // Base terrain with very vibrant green color
-    ctx.fillStyle='#6dab6d'; ctx.fillRect(0,0,W,H);
+    // Base terrain with very vibrant green color - ALWAYS VISIBLE
+    ctx.fillStyle='#7dbb7d'; ctx.fillRect(0,0,W,H);
     
     // Add some brown dirt patches
     for(let i=0;i<20;i++){
       const x=Math.random()*W, y=Math.random()*H, r=40+Math.random()*60;
-      ctx.fillStyle='#ab8d6a';
+      ctx.fillStyle='#bb9d7a';
       ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
     }
     
-    // Add grass patches - more vibrant
-    for(const g of world.grass){ ctx.fillStyle=`rgba(82,130,70,${g.a*1.5})`; ctx.beginPath(); ctx.arc(g.x,g.y,g.r,0,Math.PI*2); ctx.fill(); }
+    // Add grass patches - very vibrant and visible
+    for(const g of world.grass){ ctx.fillStyle=`rgba(92,150,80,${g.a*2})`; ctx.beginPath(); ctx.arc(g.x,g.y,g.r,0,Math.PI*2); ctx.fill(); }
     
     // Add terrain features (dirt and rock patches)
     for(const t of world.terrain){
@@ -502,15 +502,16 @@
         ctx.fillStyle='#36d399'; ctx.fillRect(b.x, b.y-12, b.w*(b.hp/b.max), 4);
       }
     }
-    // fog of war - draw black fog everywhere, then clear revealed areas
-    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+    // fog of war - only cover units and buildings, NOT terrain
+    // Draw a semi-transparent dark overlay for unrevealed areas
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
     ctx.fillRect(0, 0, W, H);
     
-    // Clear fog in revealed areas to show the terrain underneath
+    // Clear the overlay in revealed areas so terrain shows through
     ctx.globalCompositeOperation = 'destination-out';
     for(const key of world.revealed){
       const [x, y] = key.split(',').map(Number);
-      ctx.fillRect(x, y, 4, 4);
+      ctx.fillRect(x, y, 6, 6);
     }
     ctx.globalCompositeOperation = 'source-over';
     

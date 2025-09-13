@@ -445,12 +445,12 @@
   // -------- Rendering --------
   function draw(){
     // Base terrain with very vibrant color
-    ctx.fillStyle='#4d8b4d'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#5d9b5d'; ctx.fillRect(0,0,W,H);
     
     // Add some brown dirt patches
     for(let i=0;i<20;i++){
       const x=Math.random()*W, y=Math.random()*H, r=40+Math.random()*60;
-      ctx.fillStyle='#8b6d4a';
+      ctx.fillStyle='#9b7d5a';
       ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
     }
     
@@ -502,15 +502,15 @@
         ctx.fillStyle='#36d399'; ctx.fillRect(b.x, b.y-12, b.w*(b.hp/b.max), 4);
       }
     }
-    // fog of war - simplified approach to prevent flickering
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    // fog of war - simple dark overlay for unrevealed areas
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.fillRect(0, 0, W, H);
     
     // Clear fog in revealed areas
     ctx.globalCompositeOperation = 'destination-out';
     for(const key of world.revealed){
       const [x, y] = key.split(',').map(Number);
-      ctx.fillRect(x, y, 6, 6);
+      ctx.fillRect(x, y, 10, 10);
     }
     ctx.globalCompositeOperation = 'source-over';
     

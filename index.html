@@ -15,22 +15,25 @@
     #overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(5,8,16,.65);z-index:3}
     #panel{background:#0f1424;border:1px solid #1e2639;padding:24px;border-radius:16px;text-align:center;max-width:520px}
     button{background:#1b2a4a;border:1px solid #2a3b65;color:#e6e8ef;padding:10px 14px;border-radius:10px;cursor:pointer}
-    #btns{margin-left:auto;display:flex;gap:8px}
+    #btns{display:flex;gap:8px}
     input[type=file]{display:none}
     .spacer{flex:1 1 0}
   </style>
 </head>
 <body>
+  <!-- TOP TOOLBAR (buttons first, per your request) -->
   <div id="ui">
-    <div class="pill"><b>Army Skirmish</b> — tap ground to move (green), tap enemy to attack (red)</div>
-    <div class="pill">Drag to box-select • Trees block shots • Fog of war • Reactive fire + squad assist</div>
+    <div id="btns">
+      <button id="buildRifleman">Build Rifleman (50)</button>
+      <button id="buildGrenadier">Build Grenadier (100)</button>
+      <button id="selectAll">Select all</button>
+      <button id="restart">Restart</button>
+      <button id="terrainBtn">Use image terrain</button>
+      <input id="terrainFile" type="file" accept="image/*" />
+    </div>
     <div class="spacer"></div>
-    <button id="terrainBtn">Use image terrain</button>
-    <input id="terrainFile" type="file" accept="image/*" />
-    <button id="buildRifleman">Build Rifleman (50)</button>
-    <button id="buildGrenadier">Build Grenadier (100)</button>
-    <button id="selectAll">Select all</button>
-    <button id="restart">Restart</button>
+    <div class="pill"><b>Army Skirmish</b> — tap ground to move (green), tap enemy to attack (red)</div>
+    <div class="pill">Drag to box-select • Fog of war • Trees block LoS • Reactive fire + squad assist</div>
   </div>
 
   <div id="wrap"><canvas id="c" width="960" height="600"></canvas></div>
@@ -58,6 +61,19 @@
   const terrainFile=document.getElementById('terrainFile');
   const canvas=ctx.canvas;
 
+  // --- Audio ---
+  const bgm = new Audio('assets/skirmish1.mp3');
+  bgm.loop = true;
+  bgm.volume = 0.25; // low background volume
+  bgm.play().catch(() => {
+    // Autoplay may be blocked; start on first user interaction
+    const start = () => { bgm.play().catch(()=>{}); document.removeEventListener('pointerdown', start); };
+    document.addEventListener('pointerdown', start, { once: true });
+  });
+
+  const deathSoundBase = new Audio('assets/death.mp3');
+  deathSoundBase.volume = 0.6;
+
   // --- Custom cursors (SVG data URIs) ---
   const greenTarget = makeCursor('#27e36a');
   const redTarget   = makeCursor('#ff4d5a');
@@ -79,6 +95,7 @@
   const F={PLAYER:1,ENEMY:2};
   const BUILDING_TYPES = {BARRACKS:'barracks'};
   const ASSIST_RADIUS = 150;
+  const VISION=80;
   let world;
 
   function reset(){
@@ -89,16 +106,14 @@
       ended:false, stats:{lost:0,kills:0,timeStart:performance.now()},
       fogRevealed:new Set(), resources:{credits:500},
       terrainImg:null, clickFx:[],
+      grass: Array.from({length:140},()=>({x:Math.random()*W,y:Math.random()*H,r:30+Math.random()*70,a:0.06+Math.random()*0.09})),
+      terrain: Array.from({length:22},()=>({x:Math.random()*W,y:Math.random()*H,r:20+Math.random()*40,color:Math.random()<.5?'#4a3d2a':'#6a6a6a'})),
     };
-
-    // Procedural terrain seeds (fallback)
-    world.grass = Array.from({length:140},()=>({x:Math.random()*W,y:Math.random()*H,r:30+Math.random()*70,a:0.06+Math.random()*0.09}));
-    world.terrain = Array.from({length:22},()=>({x:Math.random()*W,y:Math.random()*H,r:20+Math.random()*40,color:Math.random()<.5?'#4a3d2a':'#6a6a6a'}));
 
     // Forests
     forest(260,220,16,90); forest(520,420,20,100); forest(740,180,18,85);
 
-    // Player barracks with BUILD QUEUE
+    // Player barracks (build queue)
     world.buildings.push({
       type:BUILDING_TYPES.BARRACKS, f:F.PLAYER, x:80, y:470, w:70, h:46,
       hp:260, max:260,
@@ -132,7 +147,7 @@
       type:'unit', f, x, y, r:8,
       hp:base.hp, max:base.max, range:base.range, dmg:base.dmg, s:base.s,
       cd:0, unitType,
-      target:null, vx:0, vy:0, facing:0, walk:0, // facing radians, walk phase
+      target:null, vx:0, vy:0, facing:0, walk:0,
       selected:false, wander:Math.random()*6.28
     };
     world.units.push(u); return u;
@@ -211,15 +226,12 @@
     if(world.resources.credits < cost) return;
     world.resources.credits -= cost;
     b.queue.push({kind, time});
-    // If idle, start immediately
     if(!b.current){ startNextInQueue(b); }
   }
-
   function startNextInQueue(b){
     if(b.queue.length===0){ b.current=null; b.timeLeft=0; return; }
     b.current = b.queue.shift(); b.timeLeft = b.current.time;
   }
-
   function getBarracks(faction){
     return world.buildings.find(b => b.f===faction && b.type===BUILDING_TYPES.BARRACKS);
   }
@@ -237,8 +249,7 @@
     } return false;
   }
 
-  // FoW
-  const VISION=80;
+  // Fog of War (simple revealed set)
   function revealAround(x,y){
     for(let dx=-VISION; dx<=VISION; dx+=4){
       for(let dy=-VISION; dy<=VISION; dy+=4){
@@ -251,18 +262,13 @@
   // ---------- Reactive fire ----------
   function reactToAttack(victim, attacker){
     if(!attacker || victim.hp<=0) return;
-    // victim fires back
     victim.target = attacker;
-    // nearby allies assist
     for(const ally of world.units){
       if(ally===victim) continue;
       if(ally.f!==victim.f || ally.hp<=0) continue;
       const d = Math.hypot(ally.x - victim.x, ally.y - victim.y);
-      if(d <= ASSIST_RADIUS && !blocked(ally.x,ally.y,attacker.x,attacker.y)){
-        // prefer to help if no target or current is far
-        if(!ally.target || ally.target.dummy){
-          ally.target = attacker;
-        }
+      if(d <= 150 && !blocked(ally.x,ally.y,attacker.x,attacker.y)){
+        if(!ally.target || ally.target.dummy) ally.target = attacker;
       }
     }
   }
@@ -274,7 +280,7 @@
     // Income tick every ~2s
     if(world.tAccum>=2){ world.resources.credits+=10; world.tAccum=0; }
 
-    // Cooldowns & reveal & animation advance
+    // Cooldowns/reveal/anim
     for(const u of world.units){
       if(u.cd>0) u.cd-=dt;
       if(u.f===F.PLAYER && u.hp>0) revealAround(u.x,u.y);
@@ -283,7 +289,7 @@
       else { u.walk += dt*2; }
     }
 
-    // Enemy seeking
+    // Enemy seek
     for(const u of world.units){
       if(u.f!==F.ENEMY || u.hp<=0) continue;
       if(!u.target || (u.target.hp!==undefined && u.target.hp<=0)){
@@ -332,7 +338,7 @@
           explode(b.x,b.y,b.blastRadius,b.dmg,b.f,b.from);
         } else {
           t.hp -= b.dmg;
-          reactToAttack(t, b.from); // <-- fire back & call for help
+          reactToAttack(t, b.from);
         }
         world.bullets.splice(i,1); continue;
       }
@@ -366,9 +372,17 @@
       const f=world.clickFx[i]; f.age+=dt; if(f.age>=f.life) world.clickFx.splice(i,1);
     }
 
-    // Deaths + end
-    for(let i=world.units.length-1;i>=0;i--){ const u=world.units[i]; if(u.hp>0) continue;
-      if(u.f===F.PLAYER) world.stats.lost++; else world.stats.kills++; world.units.splice(i,1); }
+    // Deaths + end (play SFX)
+    for(let i=world.units.length-1;i>=0;i--){
+      const u=world.units[i]; if(u.hp>0) continue;
+
+      // Play overlapping death cry
+      const s = deathSoundBase.cloneNode();
+      s.play().catch(()=>{});
+
+      if(u.f===F.PLAYER) world.stats.lost++; else world.stats.kills++;
+      world.units.splice(i,1);
+    }
     const pAlive=world.units.some(u=>u.f===F.PLAYER), eAlive=world.units.some(u=>u.f===F.ENEMY);
     if(!pAlive||!eAlive) endGame(pAlive && !eAlive);
   }
@@ -411,7 +425,7 @@
     if(world.terrainImg){
       const img = world.terrainImg;
       const iw=img.naturalWidth, ih=img.naturalHeight, ir=iw/ih, cr=W/H;
-      let dw=W, dh=H, sx=0, sy=0, sw=iw, sh=ih;
+      let sx=0, sy=0, sw=iw, sh=ih;
       if(ir>cr){ sw = ih*cr; sx = (iw - sw)/2; } else { sh = iw/cr; sy = (ih - sh)/2; }
       ctx.drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
       return;

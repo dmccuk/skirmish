@@ -104,7 +104,24 @@
       weaponLight: '#63544b'
     }
   };
-  const BUILDING_TYPES = {BARRACKS:'barracks'};
+  const BUILDING_TYPES = {BARRACKS:'barracks', STRONGHOLD:'stronghold'};
+  const BUILDING_CONFIG = {
+    [BUILDING_TYPES.BARRACKS]: {
+      w: 70,
+      h: 46,
+      hp: 260,
+      label: 'Barracks',
+      spawnOffset: { x: 0, y: -12 },
+      queue: true
+    },
+    [BUILDING_TYPES.STRONGHOLD]: {
+      w: 110,
+      h: 86,
+      hp: 420,
+      label: 'Stronghold',
+      queue: false
+    }
+  };
   const VISION_RADIUS=100; // Fog reveal radius
   const SEP_RADIUS = 18, SEP_FORCE = 65;
   const SPAWN_GLOW_TIME = 1.6;
@@ -608,6 +625,41 @@
     }
   }
 
+  function updateBuildingDerivedProps(b){
+    b.cx = b.x + b.w/2;
+    b.cy = b.y + b.h/2;
+    b.r = Math.max(b.w, b.h) * 0.5;
+    if(b.hitRadius==null) b.hitRadius = b.r * 0.85;
+    if(b.stopRadius==null) b.stopRadius = Math.max(28, b.r * 0.75);
+  }
+
+  function createBuilding(type, faction, x, y, overrides={}){
+    const config = BUILDING_CONFIG[type] || {};
+    const baseHp = overrides.max ?? overrides.hp ?? config.hp ?? 200;
+    const b = {
+      id:`b_${Math.random().toString(36).slice(2)}`,
+      type,
+      f:faction,
+      x,
+      y,
+      w: overrides.w ?? config.w ?? 60,
+      h: overrides.h ?? config.h ?? 60,
+      max: baseHp,
+      hp: overrides.hp ?? baseHp,
+      label: overrides.label ?? config.label ?? 'Structure',
+      queue: config.queue ? [] : [],
+      current: null,
+      timeLeft: 0,
+      spawnOffset: overrides.spawnOffset ?? config.spawnOffset ?? {x:0,y:0},
+      destroyed: false
+    };
+    Object.assign(b, overrides);
+    if(b.max==null) b.max = baseHp;
+    if(b.hp==null) b.hp = b.max;
+    updateBuildingDerivedProps(b);
+    return b;
+  }
+
   // --- World reset ---
   function reset(){
     // init fog (black)
@@ -619,9 +671,25 @@
       tAccum:0, time:0, score:0,
       units:[], bullets:[], trees:[], buildings:[],
       selection:new Set(), selBox:null,
-      ended:false, stats:{lost:0,kills:0,timeStart:performance.now()},
+      ended:false,
+      stats:{
+        lost:0,
+        kills:0,
+        timeStart:performance.now(),
+        structures:{lost:0,destroyed:0}
+      },
       resources:{credits:500},
-      enemyAI:{credits:300,incomeTimer:0,buildCooldown:2,unassigned:[],squads:[],groupTimer:5},
+      enemyAI:{
+        credits:300,
+        incomeTimer:0,
+        buildTimer:2.5,
+        buildInterval:5.5,
+        squadInterval:6,
+        unassigned:[],
+        squads:[],
+        groupTimer:0,
+        buildRotation:0
+      },
       clickFx:[]
     };
 
@@ -640,16 +708,19 @@
     populateTrees();
 
     // Player barracks
-    world.buildings.push({
-      type:BUILDING_TYPES.BARRACKS, f:F.PLAYER, x:120, y:MAP_H-130, w:70, h:46,
-      hp:260, max:260, queue:[], current:null, timeLeft:0
-    });
+    const playerBarracks = createBuilding(BUILDING_TYPES.BARRACKS, F.PLAYER, 120, MAP_H-130);
+    world.buildings.push(playerBarracks);
 
     // Enemy barracks
-    world.buildings.push({
-      type:BUILDING_TYPES.BARRACKS, f:F.ENEMY, x:2020, y:280, w:70, h:46,
-      hp:260, max:260, queue:[], current:null, timeLeft:0
+    const enemyBarracks = createBuilding(BUILDING_TYPES.BARRACKS, F.ENEMY, 2020, 280);
+    world.buildings.push(enemyBarracks);
+
+    // Enemy stronghold objective
+    const stronghold = createBuilding(BUILDING_TYPES.STRONGHOLD, F.ENEMY, 1880, 620, {
+      hitRadius: 70,
+      stopRadius: 82
     });
+    world.buildings.push(stronghold);
 
     // Player squad
     for(let i=0;i<6;i++){ const u=spawn(220+(i%3)*22,MAP_H-120+Math.floor(i/3)*26,F.PLAYER,'rifleman'); u.selected=true; world.selection.add(u); }
@@ -687,7 +758,7 @@
   }
 
   // --- Input (pointer) + cursor logic ---
-  let pointer={x:cam.x+VIEW_W/2,y:cam.y+VIEW_H/2,down:false,dragStart:null,dragging:false, overEnemy:false,inside:false};
+  let pointer={x:cam.x+VIEW_W/2,y:cam.y+VIEW_H/2,down:false,dragStart:null,dragging:false, overEnemy:false,inside:false,hoverUnit:null,hoverBuilding:null};
   const DRAG_THRESH=8;
   const canvas=ctx.canvas;
 
@@ -695,6 +766,8 @@
   canvas.addEventListener('pointerleave', () => {
     pointer.inside=false;
     pointer.overEnemy=false;
+    pointer.hoverUnit=null;
+    pointer.hoverBuilding=null;
     pointer.x=cam.x+VIEW_W/2;
     pointer.y=cam.y+VIEW_H/2;
   });
@@ -745,7 +818,11 @@
     pointer.x=p.x; pointer.y=p.y; pointer.inside=true;
     const hasSelection = world.selection.size>0;
     const spaceHeld = keys.has(' ') || keys.has('Space');
-    pointer.overEnemy = !!unitAt(p.x,p.y,F.ENEMY);
+    const hoveredEnemyUnit = unitAt(p.x,p.y,F.ENEMY);
+    const hoveredEnemyBuilding = buildingAt(p.x,p.y,F.ENEMY);
+    pointer.hoverUnit = hoveredEnemyUnit;
+    pointer.hoverBuilding = hoveredEnemyBuilding;
+    pointer.overEnemy = !!(hoveredEnemyUnit || hoveredEnemyBuilding);
     if (!spaceHeld) {
       if (hasSelection && pointer.overEnemy) canvas.style.cursor = redTarget;
       else if (hasSelection) canvas.style.cursor = greenTarget;
@@ -779,17 +856,24 @@
       world.units.forEach(u=>{ if(u.f===F.PLAYER && circleInRect(u.x,u.y,u.r,world.selBox)){ u.selected=true; world.selection.add(u);} });
       updateSelectionHUD();
     } else {
-      const enemy = unitAt(p.x,p.y,F.ENEMY);
+      const enemyUnit = unitAt(p.x,p.y,F.ENEMY);
+      const enemyBuilding = buildingAt(p.x,p.y,F.ENEMY);
       const friendly = unitAt(p.x,p.y,F.PLAYER);
-      if(enemy && hasSel){
-        world.selection.forEach(u=>u.target=enemy);
-        flashOrder('Attack');
-        addClickFx(p.x,p.y,'#ff4d5a');
+      const friendlyBuilding = buildingAt(p.x,p.y,F.PLAYER);
+      if((enemyUnit || enemyBuilding) && hasSel){
+        const target = enemyUnit || enemyBuilding;
+        world.selection.forEach(u=>u.target=target);
+        const info = getTargetInfo(target) || {x:p.x,y:p.y};
+        flashOrder(enemyBuilding ? 'Attack Structure' : 'Attack');
+        addClickFx(info.x,info.y,'#ff4d5a');
       }
       else if(friendly){
         world.selection.forEach(u=>u.selected=false); world.selection.clear();
         friendly.selected=true; world.selection.add(friendly);
         updateSelectionHUD();
+      }
+      else if(friendlyBuilding){
+        flashOrder(friendlyBuilding.label);
       }
       else if(hasSel){
         assignFormationMove([...world.selection], p.x, p.y);
@@ -838,13 +922,80 @@
     b.current = b.queue.shift(); b.timeLeft = b.current.time;
   }
   function getBarracks(faction){
-    return world.buildings.find(b => b.f===faction && b.type===BUILDING_TYPES.BARRACKS);
+    return world.buildings.find(b => b.f===faction && b.type===BUILDING_TYPES.BARRACKS && b.hp>0);
+  }
+
+  function buildingAt(x,y,filt){
+    for(const b of world.buildings){
+      if(b.hp<=0) continue;
+      if(filt && b.f!==filt) continue;
+      if(x>=b.x && x<=b.x+b.w && y>=b.y && y<=b.y+b.h) return b;
+    }
+    return null;
+  }
+
+  function countLivingStructures(faction){
+    return world.buildings.filter(b => b.f===faction && b.hp>0).length;
   }
 
   // --- Helpers ---
   function unitAt(x,y,filt){ for(const u of world.units){ if(filt && u.f!==filt) continue; if(Math.hypot(x-u.x,y-u.y)<=u.r+3) return u; } return null; }
   function circleInRect(cx,cy,r,rect){ const rx=clamp(cx,rect.x,rect.x+rect.w), ry=clamp(cy,rect.y,rect.y+rect.h);
     return (cx-r<=rect.x+rect.w && cx+r>=rect.x && cy-r<=rect.y+rect.h && cy+r>=rect.y && ((cx-rx)**2+(cy-ry)**2)<=r*r); }
+
+  function getTargetInfo(target){
+    if(!target) return null;
+    if(target.dummy){
+      return { x: target.x, y: target.y, radius: target.r || 0, stop: target.stopRadius || 4, type: 'point' };
+    }
+    if(target.type && target.type !== 'unit' && target.w!=null){
+      return {
+        x: target.cx ?? (target.x + target.w/2),
+        y: target.cy ?? (target.y + target.h/2),
+        radius: target.hitRadius ?? Math.max(target.w, target.h)/2,
+        stop: target.stopRadius ?? Math.max(28, Math.max(target.w, target.h)/2),
+        type: 'building',
+        ref: target
+      };
+    }
+    return {
+      x: target.x,
+      y: target.y,
+      radius: target.r ?? 8,
+      stop: target.r ?? 6,
+      type: 'unit',
+      ref: target
+    };
+  }
+
+  function alertDefenders(building, attacker){
+    if(!attacker || !building) return;
+    const cx = building.cx ?? (building.x + building.w/2);
+    const cy = building.cy ?? (building.y + building.h/2);
+    for(const ally of world.units){
+      if(ally.f !== building.f || ally.hp<=0) continue;
+      const d = Math.hypot(ally.x - cx, ally.y - cy);
+      if(d <= 240 && (!ally.target || ally.target.dummy)){
+        ally.target = attacker;
+      }
+    }
+  }
+
+  function damageBuilding(building, amount, attacker){
+    if(!building || building.hp<=0 || amount<=0) return;
+    building.hp = Math.max(0, building.hp - amount);
+    if(building.hp<=0 && !building.destroyed){
+      building.destroyed = true;
+      if(building.type===BUILDING_TYPES.BARRACKS){
+        building.queue.length = 0;
+        building.current = null;
+        building.timeLeft = 0;
+      }
+      if(building.f===F.PLAYER){ world.stats.structures.lost++; }
+      else { world.stats.structures.destroyed++; }
+    }
+    alertDefenders(building, attacker);
+  }
 
   // LOS blockers for rifles (trees + forest/rock tiles)
   function blockedByTerrain(ax,ay,bx,by){
@@ -898,8 +1049,9 @@
     if(!b.current) return;
     b.timeLeft -= dt;
     if(b.timeLeft>0) return;
-    const spawnX = b.x + b.w/2 + (Math.random()-0.5)*20;
-    const spawnY = (b.f===F.PLAYER) ? b.y - 10 : b.y + b.h + 12;
+    const offset = b.spawnOffset || {x:0,y:-12};
+    const spawnX = b.x + b.w/2 + offset.x + (Math.random()-0.5)*20;
+    const spawnY = (b.f===F.PLAYER) ? (b.y + offset.y) : (b.y + b.h - offset.y);
     const nu = spawn(spawnX, spawnY, b.f, b.current.kind);
     if(b.f===F.PLAYER){
       nu.spawnGlow = SPAWN_GLOW_TIME;
@@ -966,32 +1118,36 @@
 
     const barracks = getBarracks(F.ENEMY);
     if(barracks && barracks.hp>0){
-      if(ai.buildCooldown>0) ai.buildCooldown -= dt;
-      if(ai.buildCooldown<=0 && barracks.queue.length < 3){
-        const choice = (Math.random() < 0.7) ? 'rifleman' : 'grenadier';
+      ai.buildTimer -= dt;
+      if(ai.buildTimer<=0 && barracks.queue.length < 3){
+        const rotation = ai.buildRotation % 4;
+        const choice = rotation===3 ? 'grenadier' : 'rifleman';
         const cost = choice==='rifleman'?50:100;
         if(ai.credits >= cost){
           ai.credits -= cost;
           const baseTime = choice==='rifleman'?3:4;
-          const buildTime = baseTime * 1.4;
+          const buildTime = baseTime * 1.55;
           barracks.queue.push({kind:choice, time:buildTime});
           if(!barracks.current) startNextInQueue(barracks);
-          ai.buildCooldown = 3 + Math.random()*3;
+          ai.buildRotation = (ai.buildRotation + 1) % 8;
+          ai.buildTimer += ai.buildInterval;
         } else {
-          ai.buildCooldown = 1.5;
+          ai.buildTimer += 1.5;
         }
       }
+    } else {
+      ai.buildTimer = Math.max(ai.buildTimer, ai.buildInterval);
     }
 
     ai.unassigned = ai.unassigned.filter(u => u.hp>0);
     ai.groupTimer += dt;
 
-    if(ai.unassigned.length >= 2 && ai.groupTimer >= 4){
-      const maxSize = Math.min(5, ai.unassigned.length);
-      const size = Math.floor(Math.random() * (maxSize - 1)) + 2;
+    if(ai.unassigned.length >= 2 && ai.groupTimer >= ai.squadInterval){
+      const maxSize = Math.min(4, ai.unassigned.length);
+      const size = Math.max(2, maxSize);
       const members = ai.unassigned.splice(0, size);
       ai.squads.push({members, waypoint:null, targetUnit:null, reassign:0});
-      ai.groupTimer = 0;
+      ai.groupTimer -= ai.squadInterval;
     }
 
     for(let i=ai.squads.length-1;i>=0;i--){
@@ -1139,16 +1295,22 @@
       let t=u.target; if(t && t.hp!==undefined && t.hp<=0) t=u.target=null;
 
       if(t){
-        const tx=t.x, ty=t.y, dist=Math.hypot(tx-u.x,ty-u.y);
-        const inRange=dist<=u.range;
-        const canShoot = inRange && (u.unitType==='grenadier' ? true : !rifleBlocked(u.x,u.y,tx,ty));
+        const info = getTargetInfo(t);
+        const tx = info?.x ?? t.x;
+        const ty = info?.y ?? t.y;
+        const dist = Math.hypot(tx-u.x,ty-u.y);
+        const edgeDist = Math.max(0, dist - (info?.radius || 0));
         if(t.dummy){
-          moveToward(u,tx,ty,dt,true);
+          moveToward(u,tx,ty,dt,true, info?.stop || 4);
           if(dist<6) u.target=null;
-        } else if(canShoot){
-          if(u.cd<=0){ fire(u,t); u.cd=0.5+Math.random()*0.2; }
         } else {
-          moveToward(u,tx,ty,dt,true);
+          const inRange = edgeDist<=u.range;
+          const canShoot = inRange && (u.unitType==='grenadier' ? true : !rifleBlocked(u.x,u.y,tx,ty));
+          if(canShoot){
+            if(u.cd<=0){ fire(u,t); u.cd=0.5+Math.random()*0.2; }
+          } else {
+            moveToward(u,tx,ty,dt,true, info?.stop || 0);
+          }
         }
       } else {
         const sep = separation(u);
@@ -1188,7 +1350,22 @@
         if(rifleBlocked(b.ox,b.oy,b.x+nx,b.y+ny)){ world.bullets.splice(i,1); continue; }
         b.x+=nx; b.y+=ny; b.life-=dt;
         const t=b.target;
-        if(t && t.hp>0 && Math.hypot(b.x-t.x,b.y-t.y)<t.r+3){ t.hp -= b.dmg; reactToAttack(t, b.from); world.bullets.splice(i,1); continue; }
+        if(t && t.hp>0){
+          const info = getTargetInfo(t);
+          const tx = info?.x ?? t.x;
+          const ty = info?.y ?? t.y;
+          const hitRadius = (info?.radius || 6) + (info?.type==='building'?6:3);
+          if(Math.hypot(b.x-tx,b.y-ty)<hitRadius){
+            if(info?.type==='building' && info.ref){
+              damageBuilding(info.ref, b.dmg, b.from);
+            } else {
+              t.hp -= b.dmg;
+              reactToAttack(t, b.from);
+            }
+            world.bullets.splice(i,1);
+            continue;
+          }
+        }
         if(b.life<=0){ world.bullets.splice(i,1); }
       }
     }
@@ -1216,12 +1393,16 @@
     updateSelectionHUD();
 
     // Win/lose
-    const pAlive=world.units.some(u=>u.f===F.PLAYER), eAlive=world.units.some(u=>u.f===F.ENEMY);
-    if(!pAlive||!eAlive) endGame(pAlive && !eAlive);
+    const pAlive = world.units.some(u=>u.f===F.PLAYER) || world.buildings.some(b=>b.f===F.PLAYER && b.hp>0);
+    const eAlive = world.units.some(u=>u.f===F.ENEMY) || world.buildings.some(b=>b.f===F.ENEMY && b.hp>0);
+    if(!pAlive || !eAlive) endGame(pAlive && !eAlive);
   }
 
-  function moveToward(u,tx,ty,dt,applySep=false){
-    const ang=Math.atan2(ty-u.y,tx-u.x), sp=u.s;
+  function moveToward(u,tx,ty,dt,applySep=false,stopDist=0){
+    const dx = tx - u.x, dy = ty - u.y;
+    const dist = Math.hypot(dx,dy);
+    if(stopDist>0 && dist<=stopDist){ u.vx*=0.5; u.vy*=0.5; return; }
+    const ang=Math.atan2(dy,dx), sp=u.s;
     let vx=Math.cos(ang)*sp, vy=Math.sin(ang)*sp;
     if(applySep){
       const sep = separation(u);
@@ -1247,18 +1428,21 @@
   }
 
   function fire(from,target){
+    const info = getTargetInfo(target);
+    const tx = info?.x ?? target.x;
+    const ty = info?.y ?? target.y;
     if(from.unitType==='grenadier'){
-      const dist = Math.hypot(target.x - from.x, target.y - from.y);
+      const dist = Math.hypot(tx - from.x, ty - from.y);
       const flight = clamp(0.55 + dist / 600, 0.55, 1.2);
       world.bullets.push({
         x:from.x, y:from.y, ox:from.x, oy:from.y,
-        tx:target.x, ty:target.y, target,
+        tx, ty, target,
         dmg:from.dmg, f:from.f, from,
         ballistic:true, t:0, tMax:flight,
         explosive:true, blastRadius:35
       });
     } else {
-      world.bullets.push({x:from.x,y:from.y,ox:from.x,oy:from.y,tx:target.x,ty:target.y,target,
+      world.bullets.push({x:from.x,y:from.y,ox:from.x,oy:from.y,tx,ty,target,
                           spd:5.5,dmg:from.dmg,life:.6,f:from.f,from,explosive:false});
     }
   }
@@ -1270,9 +1454,21 @@
       if(u.f===faction || u.hp<=0) continue;
       const dist=Math.hypot(u.x-x,u.y-y);
       if(dist<=radius){
-        const dd=Math.max(1, dmg*(1-dist/radius)); 
+        const dd=Math.max(1, dmg*(1-dist/radius));
         u.hp-=dd;
         if(attacker) reactToAttack(u, attacker);
+      }
+    }
+    for(const b of world.buildings){
+      if(b.f===faction || b.hp<=0) continue;
+      const info = getTargetInfo(b);
+      const bx = info?.x ?? (b.x + b.w/2);
+      const by = info?.y ?? (b.y + b.h/2);
+      const dist = Math.hypot(bx - x, by - y);
+      const effectiveRadius = radius + (info?.radius || 0);
+      if(dist<=effectiveRadius){
+        const dd = Math.max(2, dmg*(1 - dist/(effectiveRadius||1)));
+        damageBuilding(b, dd, attacker);
       }
     }
   }
@@ -1383,32 +1579,134 @@
     }
   }
 
+  function drawBuilding(b){
+    if(b.type===BUILDING_TYPES.BARRACKS) drawBarracks(b);
+    else if(b.type===BUILDING_TYPES.STRONGHOLD) drawStronghold(b);
+  }
+
   function drawBarracks(b){
     const isPlayer = b.f===F.PLAYER;
     const s=worldToScreen(b.x,b.y);
     const x=s.x, y=s.y, w=b.w, h=b.h;
     if(x<-w||y<-h||x>VIEW_W||y>VIEW_H) return;
 
-    ctx.fillStyle='rgba(0,0,0,.35)'; ctx.fillRect(x+3,y+3,w,h);
-    ctx.fillStyle = isPlayer ? '#4a8bd3' : '#d34a4a';
+    const ratio = clamp(b.hp / b.max, 0, 1);
+    const stage = (b.hp<=0) ? 3 : (ratio>0.66 ? 0 : (ratio>0.33 ? 1 : 2));
+    const wallPalette = isPlayer
+      ? ['#4a8bd3','#3f6da7','#2f4f7c','#2a3550']
+      : ['#d34a4a','#b03c3c','#7a2c2c','#432020'];
+    const roofPalette = isPlayer
+      ? ['#2d4a6b','#253d58','#1f3146','#182236']
+      : ['#6b2d2d','#522222','#3c1919','#261111'];
+    const trimPalette = isPlayer
+      ? ['#7cc2ff','#5e9fd6','#436f9b','#2c4057']
+      : ['#ff8080','#d36868','#9b4646','#5c2b2b'];
+
+    const wallColor = wallPalette[stage];
+    const roofColor = roofPalette[stage];
+    const trimColor = trimPalette[stage];
+
+    ctx.fillStyle='rgba(0,0,0,0.35)';
+    ctx.fillRect(x+4,y+h-4,w-8,6);
+
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 1.5;
+    roundRect(x,y,w,h,6,false,true);
+    ctx.lineWidth = 1;
+    ctx.fillStyle = wallColor;
     roundRect(x,y,w,h,6,true,false);
-    ctx.fillStyle = isPlayer ? '#2d4a6b' : '#6b2d2d';
-    roundRect(x+4,y+4,w-8,14,4,true,false);
-    ctx.fillStyle = 'rgba(255,255,255,.15)'; ctx.fillRect(x+8,y+6,12,3); ctx.fillRect(x+w-20,y+6,12,3);
-    ctx.fillStyle = '#0e121d'; ctx.fillRect(x+w/2-6,y+h-16,12,16);
-    ctx.fillStyle = isPlayer ? '#3bd1ff' : '#ff6666';
-    ctx.fillRect(x+6,y-8,2,8); ctx.beginPath(); ctx.moveTo(x+8,y-8); ctx.lineTo(x+22,y-3); ctx.lineTo(x+8,y+2); ctx.closePath(); ctx.fill();
 
-    ctx.fillStyle='#0e121d'; ctx.fillRect(x,y-10,w,4);
-    ctx.fillStyle='#36d399'; ctx.fillRect(x,y-10,w*(b.hp/b.max),4);
+    ctx.fillStyle = roofColor;
+    roundRect(x+6,y+5,w-12,16,6,true,false);
 
-    if(b.current){
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.1 + (1-ratio)*0.05) + ')';
+    ctx.fillRect(x+10,y+8,14,3);
+    ctx.fillRect(x+w-24,y+8,14,3);
+
+    ctx.fillStyle = '#0e121d';
+    const doorWidth = 14;
+    ctx.fillRect(x + w/2 - doorWidth/2, y+h-18, doorWidth, 18);
+    ctx.fillStyle = trimColor;
+    ctx.fillRect(x + w/2 - doorWidth/2 + 3, y+h-15, doorWidth-6, 2);
+
+    ctx.fillStyle = trimColor;
+    ctx.fillRect(x+8,y-10,3,14);
+    ctx.beginPath();
+    ctx.moveTo(x+11,y-10);
+    ctx.lineTo(x+26,y-3);
+    ctx.lineTo(x+11,y+4);
+    ctx.closePath();
+    ctx.fill();
+
+    if(stage>=1){
+      ctx.fillStyle = 'rgba(0,0,0,' + (0.15 + stage*0.08) + ')';
+      ctx.beginPath();
+      ctx.ellipse(x+w*0.3, y+h*0.45, 6+stage*1.2, 4+stage, Math.PI/6, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(x+w*0.68, y+h*0.5, 5+stage, 3+stage*0.8, -Math.PI/8, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    if(stage>=2){
+      ctx.fillStyle = 'rgba(54,32,32,0.45)';
+      ctx.beginPath();
+      ctx.moveTo(x+w*0.18, y+h*0.32);
+      ctx.lineTo(x+w*0.28, y+h*0.38);
+      ctx.lineTo(x+w*0.24, y+h*0.52);
+      ctx.lineTo(x+w*0.12, y+h*0.46);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = 'rgba(18,18,18,0.65)';
+      ctx.beginPath();
+      ctx.arc(x+w*0.58, y+h*0.35, 5+stage, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    if(stage===3){
+      ctx.fillStyle = 'rgba(15,15,15,0.55)';
+      ctx.beginPath();
+      ctx.moveTo(x+8, y+16);
+      ctx.lineTo(x+w-8, y+12);
+      ctx.lineTo(x+w-18, y+h-10);
+      ctx.lineTo(x+18, y+h-6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(120,120,120,0.5)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(x+12, y+h-12);
+      ctx.lineTo(x+w-14, y+10);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.beginPath();
+      ctx.moveTo(x+20, y+18);
+      ctx.lineTo(x+w-20, y+14);
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(90,90,90,0.45)';
+      ctx.beginPath();
+      ctx.arc(x+w*0.4, y-12, 8, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x+w*0.62, y-8, 10, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    ctx.fillStyle='#0e121d';
+    ctx.fillRect(x,y-10,w,4);
+    ctx.fillStyle = b.hp>0 ? '#36d399' : '#5a5a5a';
+    if(b.hp>0) ctx.fillRect(x,y-10,w*(ratio),4);
+    else ctx.fillRect(x,y-10,w,4);
+
+    if(b.current && b.hp>0){
       const total = b.current.time; const prog = Math.max(0,1 - b.timeLeft/total);
       ctx.fillStyle='#36d399'; ctx.fillRect(x,y-16,w*prog,4);
     }
-    if(b.queue.length>0){
+    if(b.queue.length>0 && b.hp>0){
       ctx.fillStyle='#ffffff'; ctx.font='12px system-ui';
-      ctx.fillText(`Queue: ${b.queue.length}`, x, y-20);
+      ctx.fillText(`Queue: ${b.queue.length}`, x, y-22);
     }
   }
 
@@ -1421,7 +1719,116 @@
     if(fill) ctx.fill(); if(stroke) ctx.stroke();
   }
 
-  function drawBuildings(){ for(const b of world.buildings){ drawBarracks(b); } }
+  function drawStronghold(b){
+    const s=worldToScreen(b.x,b.y);
+    const x=s.x, y=s.y, w=b.w, h=b.h;
+    if(x<-w||y<-h||x>VIEW_W||y>VIEW_H) return;
+
+    const ratio = clamp(b.hp / b.max, 0, 1);
+    const stage = (b.hp<=0) ? 3 : (ratio>0.7 ? 0 : (ratio>0.4 ? 1 : 2));
+    const wallColors = ['#6c6250','#5e5544','#4c4436','#3a3127'];
+    const trimColors = ['#8d8264','#7b7256','#615b45','#4a4335'];
+    const roofColors = ['#3e2f1f','#35271a','#2a1f15','#1d140c'];
+    const wallColor = wallColors[stage];
+    const trimColor = trimColors[stage];
+    const roofColor = roofColors[stage];
+
+    ctx.fillStyle='rgba(0,0,0,0.4)';
+    ctx.fillRect(x+8,y+h-6,w-16,8);
+
+    ctx.fillStyle = '#1f1a14';
+    roundRect(x-6,y+h-10,w+12,12,8,true,false);
+
+    ctx.fillStyle = wallColor;
+    roundRect(x,y,w,h,12,true,false);
+
+    ctx.fillStyle = trimColor;
+    ctx.fillRect(x+14,y+18,w-28,10);
+    ctx.fillRect(x+20,y+28,w-40,10);
+
+    ctx.fillStyle = roofColor;
+    ctx.beginPath();
+    ctx.moveTo(x+18, y+24);
+    ctx.lineTo(x+w/2, y+6);
+    ctx.lineTo(x+w-18, y+24);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = '#0d0d0d';
+    ctx.fillRect(x+w/2-12, y+h-30, 24, 30);
+    ctx.fillStyle = trimColor;
+    ctx.fillRect(x+w/2-9, y+h-28, 18, 4);
+
+    ctx.fillStyle = trimColor;
+    const towerW = 18, towerH = 30;
+    const towerPositions = [x+10, x+w-10-towerW];
+    for(const txp of towerPositions){
+      roundRect(txp, y+16, towerW, towerH, 6, true, false);
+      ctx.fillStyle = '#111';
+      ctx.fillRect(txp+5, y+20, towerW-10, towerH-16);
+      ctx.fillStyle = trimColor;
+    }
+
+    ctx.fillStyle = b.f===F.ENEMY ? '#ff8a66' : '#3bd1ff';
+    ctx.fillRect(x+w/2+4, y+6, 3, 16);
+    ctx.beginPath();
+    ctx.moveTo(x+w/2+7, y+6);
+    ctx.lineTo(x+w/2+18, y+11);
+    ctx.lineTo(x+w/2+7, y+16);
+    ctx.closePath();
+    ctx.fill();
+
+    if(stage>=1){
+      ctx.fillStyle = 'rgba(0,0,0,' + (0.12 + stage*0.08) + ')';
+      ctx.beginPath();
+      ctx.ellipse(x+w*0.32, y+h*0.46, 8+stage*1.8, 5+stage, Math.PI/5, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(x+w*0.68, y+h*0.42, 9+stage*1.5, 5+stage*0.9, -Math.PI/6, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    if(stage>=2){
+      ctx.fillStyle = 'rgba(36,20,20,0.6)';
+      ctx.beginPath();
+      ctx.moveTo(x+w*0.22, y+40);
+      ctx.lineTo(x+w*0.36, y+50);
+      ctx.lineTo(x+w*0.28, y+64);
+      ctx.lineTo(x+w*0.16, y+58);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = 'rgba(15,15,15,0.7)';
+      ctx.beginPath();
+      ctx.arc(x+w*0.58, y+36, 8+stage*1.3, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    if(stage===3){
+      ctx.fillStyle = 'rgba(18,18,18,0.55)';
+      ctx.beginPath();
+      ctx.moveTo(x+14, y+26);
+      ctx.lineTo(x+w-14, y+22);
+      ctx.lineTo(x+w-30, y+h-18);
+      ctx.lineTo(x+30, y+h-12);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = 'rgba(70,70,70,0.5)';
+      ctx.beginPath();
+      ctx.arc(x+w*0.4, y-16, 12, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x+w*0.62, y-12, 14, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    ctx.fillStyle='#0e121d';
+    ctx.fillRect(x,y-12,w,5);
+    ctx.fillStyle = b.hp>0 ? '#36d399' : '#5a5a5a';
+    if(b.hp>0) ctx.fillRect(x,y-12,w*ratio,5);
+    else ctx.fillRect(x,y-12,w,5);
+  }
+
+  function drawBuildings(){ for(const b of world.buildings){ drawBuilding(b); } }
 
   // Animated soldier
   function drawSoldier(u){
@@ -1670,6 +2077,18 @@
     mctx.strokeStyle = '#8ab4ff'; mctx.lineWidth = 1;
     mctx.strokeRect(cam.x*mScaleX, cam.y*mScaleY, VIEW_W*mScaleX, VIEW_H*mScaleY);
 
+    for(const b of world.buildings){
+      const info = getTargetInfo(b);
+      const bx = info?.x ?? (b.x + b.w/2);
+      const by = info?.y ?? (b.y + b.h/2);
+      const size = (b.type===BUILDING_TYPES.STRONGHOLD) ? 5 : 4;
+      const color = b.hp>0 ? (b.f===F.PLAYER ? '#1fd4ff' : '#ff8a66') : '#4b4b4b';
+      mctx.fillStyle = color;
+      const px = Math.floor(bx*mScaleX) - Math.floor(size/2);
+      const py = Math.floor(by*mScaleY) - Math.floor(size/2);
+      mctx.fillRect(px, py, size, size);
+    }
+
     for(const u of world.units){
       mctx.fillStyle = (u.f===F.PLAYER)?'#3bd1ff':'#ff6666';
       mctx.fillRect((u.x*mScaleX)|0, (u.y*mScaleY)|0, 2, 2);
@@ -1705,16 +2124,41 @@
     drawFog();
 
     ctx.fillStyle='#ffffff'; ctx.font='bold 14px system-ui';
-    const p=world.units.filter(u=>u.f===F.PLAYER).length, e=world.units.filter(u=>u.f===F.ENEMY).length;
-    ctx.fillText(`Credits: ${world.resources.credits}  |  Troops: ${p}  |  Hostiles: ${e}`,10,20);
-    const b = getBarracks(F.PLAYER);
-    if(b){
-      if(b.current){
-        const prog = Math.max(0,1 - b.timeLeft/b.current.time);
-        ctx.fillText(`Barracks: ${b.current.kind} ${Math.round(prog*100)}% • Queue ${b.queue.length}`, 10, 40);
+    const p=world.units.filter(u=>u.f===F.PLAYER).length;
+    const e=world.units.filter(u=>u.f===F.ENEMY).length;
+    const playerStructs = countLivingStructures(F.PLAYER);
+    const enemyStructs = countLivingStructures(F.ENEMY);
+    let hudY = 20;
+    ctx.fillText(`Credits: ${world.resources.credits}`,10,hudY);
+    hudY += 18;
+    ctx.fillText(`Troops: ${p}  |  Hostiles: ${e}`,10,hudY);
+    hudY += 18;
+    ctx.fillText(`Structures: ${playerStructs}  |  Enemy Structures: ${enemyStructs}`,10,hudY);
+    hudY += 18;
+    const playerBarracksAny = world.buildings.find(b=>b.type===BUILDING_TYPES.BARRACKS && b.f===F.PLAYER);
+    if(playerBarracksAny){
+      if(playerBarracksAny.hp>0 && playerBarracksAny.current){
+        const prog = Math.max(0,1 - playerBarracksAny.timeLeft/playerBarracksAny.current.time);
+        const hpText = `${Math.max(0,Math.ceil(playerBarracksAny.hp))}/${playerBarracksAny.max}`;
+        const queueCount = playerBarracksAny.queue.length;
+        const progressPct = Math.round(prog*100);
+        const line = `Barracks: ${playerBarracksAny.current.kind} ${progressPct}% • HP ${hpText} • Queue ${queueCount}`;
+        ctx.fillText(line, 10, hudY);
+      } else if(playerBarracksAny && playerBarracksAny.hp>0){
+        const hpText = `${Math.max(0,Math.ceil(playerBarracksAny.hp))}/${playerBarracksAny.max}`;
+        const queueCount = playerBarracksAny.queue.length;
+        ctx.fillText(`Barracks: HP ${hpText} • Queue ${queueCount}`, 10, hudY);
       } else {
-        ctx.fillText(`Barracks: idle • Queue ${b.queue.length}`, 10, 40);
+        ctx.fillText(`Barracks: Destroyed`, 10, hudY);
       }
+      hudY += 18;
+    }
+    const enemyStronghold = world.buildings.find(b=>b.type===BUILDING_TYPES.STRONGHOLD && b.f===F.ENEMY);
+    if(enemyStronghold){
+      const strongholdText = enemyStronghold.hp>0
+        ? `${Math.max(0,Math.ceil(enemyStronghold.hp))}/${enemyStronghold.max}`
+        : 'Destroyed';
+      ctx.fillText(`Enemy Stronghold: ${strongholdText}`, 10, hudY);
     }
 
     drawMinimap();
@@ -1731,7 +2175,8 @@
     world.ended=true; overlay.style.display='flex';
     resultEl.textContent = win ? 'Victory — area secured!' : 'Defeat — squad wiped.';
     const sec=((performance.now()-world.stats.timeStart)/1000).toFixed(1);
-    statsEl.textContent=`Time: ${sec}s • Lost: ${world.stats.lost} • Kills: ${world.stats.kills}`;
+    const struct=world.stats.structures;
+    statsEl.textContent=`Time: ${sec}s • Lost: ${world.stats.lost} • Kills: ${world.stats.kills} • Structures Lost: ${struct.lost} • Structures Destroyed: ${struct.destroyed}`;
   }
 
   // Drag/drop + button terrain override

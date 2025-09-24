@@ -1,7 +1,7 @@
 (() => {
   // -------- Viewport & World sizes --------
   const VIEW_W=960, VIEW_H=600; // canvas size
-  const MAP_W=2400, MAP_H=1600; // large map
+  const MAP_W=2400, MAP_H=1584; // large map (aligned to TILE_SIZE)
   const ctx=document.getElementById('c').getContext('2d');
   ctx.canvas.width = VIEW_W; ctx.canvas.height = VIEW_H;
 
@@ -35,6 +35,8 @@
   const selGridEl  = document.getElementById('selGrid');
   const orderFlash = document.getElementById('orderFlash');
   let orderFlashTimer=null;
+  const unitReadyNotice = document.getElementById('unitReadyNotice');
+  let unitReadyTimer=null;
 
   // --- Audio ---
   const bgm = new Audio('assets/skirmish1.mp3'); bgm.loop = true; bgm.volume = parseFloat(volumeSlider.value);
@@ -64,13 +66,52 @@
 
   // -------- World / Tilemap --------
   const F={PLAYER:1,ENEMY:2};
-  const BUILDING_TYPES = {BARRACKS:'barracks'};
+  const UNIT_PALETTES = {
+    [F.PLAYER]: {
+      uniformBase: '#2f4a63',
+      uniformShadow: '#1f3246',
+      rifleTop: '#4c8dff',
+      grenTop: '#5b8f3b',
+      rifleAccent: '#93c7ff',
+      grenAccent: '#c8e39a',
+      riflePouch: '#1b2d42',
+      grenPouch: '#384926',
+      strap: '#152436',
+      gloves: '#1c2535',
+      boots: '#1c2535',
+      hatDark: '#1a2b3f',
+      hatLight: '#355278',
+      hatBand: '#5dd6ff',
+      weapon: '#2d3038',
+      weaponLight: '#575d68'
+    },
+    [F.ENEMY]: {
+      uniformBase: '#7a3434',
+      uniformShadow: '#4d1c1c',
+      rifleTop: '#c24d4d',
+      grenTop: '#c2973b',
+      rifleAccent: '#ffb1b1',
+      grenAccent: '#f1d79a',
+      riflePouch: '#431b1b',
+      grenPouch: '#4a3110',
+      strap: '#2d1111',
+      gloves: '#2d1b1b',
+      boots: '#2b1515',
+      hatDark: '#3d1515',
+      hatLight: '#592020',
+      hatBand: '#ff8a66',
+      weapon: '#2d2622',
+      weaponLight: '#63544b'
+    }
+  };
+  const BUILDING_TYPES = {BARRACKS:'barracks', STRONGHOLD:'stronghold'};
   const VISION_RADIUS=100; // Fog reveal radius
   const SEP_RADIUS = 18, SEP_FORCE = 65;
+  const SPAWN_GLOW_TIME = 1.6;
 
   // Tile constants
   const TILE = { PLAIN:0, FOREST:1, WATER:2, ROCK:3 };
-  const TILE_SIZE = 50;
+  const TILE_SIZE = 24;
   const GRID_W = MAP_W / TILE_SIZE;
   const GRID_H = MAP_H / TILE_SIZE;
 
@@ -86,6 +127,25 @@
   };
 
   let world;
+
+  function makeBuilding(type, faction, x, y, w, h, hp){
+    const building = {
+      type,
+      entityType:'building',
+      f:faction,
+      x, y, w, h,
+      hp, max:hp,
+      queue:[],
+      current:null,
+      timeLeft:0,
+      hitRadius:Math.max(w,h)*0.55,
+      r:Math.max(w,h)*0.55,
+      cx:x + w/2,
+      cy:y + h/2,
+      damageFlash:0
+    };
+    return building;
+  }
 
   // Offscreen fog canvas
   const fogCanvas = document.createElement('canvas');
@@ -491,11 +551,15 @@
         if(inBounds(cx,cy)) tilemap[idx(cx,cy)] = 2; // WATER
       }
     }
-    const bridges = [10, 24, 38, 46];
-    for(const bx of bridges){
-      for(let by=0; by<GRID_H; by++){
-        if(inBounds(bx,by))   tilemap[idx(bx,by)]   = 0;
-        if(inBounds(bx+1,by)) tilemap[idx(bx+1,by)] = 0;
+    const bridgeWorldX = [500, 1200, 1900, 2300];
+    const bridgeCols = Math.min(GRID_W, Math.max(2, Math.round(100 / TILE_SIZE)));
+    for(const px of bridgeWorldX){
+      const start = clamp(Math.round(px / TILE_SIZE), 0, GRID_W - bridgeCols);
+      for(let dx=0; dx<bridgeCols; dx++){
+        const bx = start + dx;
+        for(let by=0; by<GRID_H; by++){
+          if(inBounds(bx,by)) tilemap[idx(bx,by)] = 0;
+        }
       }
     }
   }
@@ -576,9 +640,15 @@
       selection:new Set(), selBox:null,
       ended:false, stats:{lost:0,kills:0,timeStart:performance.now()},
       resources:{credits:500},
-      enemyAI:{credits:300,incomeTimer:0,buildCooldown:2,unassigned:[],squads:[],groupTimer:5},
+      enemyAI:{credits:300,incomeTimer:0,productionTimer:2.5,unassigned:[],squads:[],groupTimer:5},
       clickFx:[]
     };
+
+    if(unitReadyTimer){ clearTimeout(unitReadyTimer); unitReadyTimer=null; }
+    if(unitReadyNotice){
+      unitReadyNotice.classList.remove('show');
+      unitReadyNotice.textContent='';
+    }
 
     // Build tilemap with lower density
     tilemap = new Uint8Array(GRID_W*GRID_H).fill(0); // PLAIN
@@ -589,16 +659,14 @@
     populateTrees();
 
     // Player barracks
-    world.buildings.push({
-      type:BUILDING_TYPES.BARRACKS, f:F.PLAYER, x:120, y:MAP_H-130, w:70, h:46,
-      hp:260, max:260, queue:[], current:null, timeLeft:0
-    });
+    const playerBarracks = makeBuilding(BUILDING_TYPES.BARRACKS, F.PLAYER, 120, MAP_H-130, 70, 46, 260);
+    world.buildings.push(playerBarracks);
 
-    // Enemy barracks
-    world.buildings.push({
-      type:BUILDING_TYPES.BARRACKS, f:F.ENEMY, x:2020, y:280, w:70, h:46,
-      hp:260, max:260, queue:[], current:null, timeLeft:0
-    });
+    const enemyBarracks = makeBuilding(BUILDING_TYPES.BARRACKS, F.ENEMY, 2020, 280, 70, 46, 260);
+    world.buildings.push(enemyBarracks);
+
+    const enemyStronghold = makeBuilding(BUILDING_TYPES.STRONGHOLD, F.ENEMY, 1980, 140, 120, 96, 360);
+    world.buildings.push(enemyStronghold);
 
     // Player squad
     for(let i=0;i<6;i++){ const u=spawn(220+(i%3)*22,MAP_H-120+Math.floor(i/3)*26,F.PLAYER,'rifleman'); u.selected=true; world.selection.add(u); }
@@ -629,7 +697,8 @@
       hp:base.hp, max:base.max, range:base.range, dmg:base.dmg, s:base.s,
       cd:0, unitType,
       target:null, vx:0, vy:0, facing:0, walk:0,
-      selected:false, wander:Math.random()*6.28
+      selected:false, wander:Math.random()*6.28,
+      spawnGlow:0
     };
     world.units.push(u); return u;
   }
@@ -693,7 +762,7 @@
     pointer.x=p.x; pointer.y=p.y; pointer.inside=true;
     const hasSelection = world.selection.size>0;
     const spaceHeld = keys.has(' ') || keys.has('Space');
-    pointer.overEnemy = !!unitAt(p.x,p.y,F.ENEMY);
+    pointer.overEnemy = !!enemyTargetAt(p.x,p.y);
     if (!spaceHeld) {
       if (hasSelection && pointer.overEnemy) canvas.style.cursor = redTarget;
       else if (hasSelection) canvas.style.cursor = greenTarget;
@@ -727,7 +796,7 @@
       world.units.forEach(u=>{ if(u.f===F.PLAYER && circleInRect(u.x,u.y,u.r,world.selBox)){ u.selected=true; world.selection.add(u);} });
       updateSelectionHUD();
     } else {
-      const enemy = unitAt(p.x,p.y,F.ENEMY);
+      const enemy = enemyTargetAt(p.x,p.y);
       const friendly = unitAt(p.x,p.y,F.PLAYER);
       if(enemy && hasSel){
         world.selection.forEach(u=>u.target=enemy);
@@ -757,8 +826,8 @@
 
   canvas.addEventListener('contextmenu', e=>e.preventDefault(), {passive:false});
 
-  function addClickFx(x,y,color){
-    world.clickFx.push({x,y,color,age:0,life:0.5});
+  function addClickFx(x,y,color,life=0.5){
+    world.clickFx.push({x,y,color,age:0,life});
     while (world.clickFx.length > 12) world.clickFx.shift(); // cap effects
   }
   function pos(e){ const r=canvas.getBoundingClientRect(); return {x:(e.clientX-r.left), y:(e.clientY-r.top)}; }
@@ -793,6 +862,47 @@
   function unitAt(x,y,filt){ for(const u of world.units){ if(filt && u.f!==filt) continue; if(Math.hypot(x-u.x,y-u.y)<=u.r+3) return u; } return null; }
   function circleInRect(cx,cy,r,rect){ const rx=clamp(cx,rect.x,rect.x+rect.w), ry=clamp(cy,rect.y,rect.y+rect.h);
     return (cx-r<=rect.x+rect.w && cx+r>=rect.x && cy-r<=rect.y+rect.h && cy+r>=rect.y && ((cx-rx)**2+(cy-ry)**2)<=r*r); }
+
+  function pointInBuilding(x,y,b){
+    const pad = 6;
+    return x>=b.x-pad && x<=b.x+b.w+pad && y>=b.y-pad && y<=b.y+b.h+pad;
+  }
+  function structureAt(x,y,filt){
+    for(const b of world.buildings){
+      if(b.hp<=0) continue;
+      if(filt && b.f!==filt) continue;
+      if(pointInBuilding(x,y,b)) return b;
+    }
+    return null;
+  }
+  function enemyTargetAt(x,y){
+    const u = unitAt(x,y,F.ENEMY);
+    if(u) return u;
+    return structureAt(x,y,F.ENEMY);
+  }
+  function getEntityPoint(entity){
+    if(!entity) return {x:0,y:0};
+    if(entity.cx!==undefined && entity.cy!==undefined) return {x:entity.cx,y:entity.cy};
+    if(entity.entityType==='building') return {x:entity.x + entity.w/2, y:entity.y + entity.h/2};
+    return {x:entity.x, y:entity.y};
+  }
+  function applyDamage(target, amount, attacker){
+    if(!target || target.hp<=0) return;
+    target.hp = Math.max(0, target.hp - amount);
+    if(target.entityType==='unit'){
+      if(attacker) reactToAttack(target, attacker);
+    } else if(target.entityType==='building'){
+      target.damageFlash = 0.18;
+    }
+    if(target.hp<=0){
+      target.destroyed = true;
+      if(target.type===BUILDING_TYPES.BARRACKS){
+        target.queue.length = 0;
+        target.current = null;
+        target.timeLeft = 0;
+      }
+    }
+  }
 
   // LOS blockers for rifles (trees + forest/rock tiles)
   function blockedByTerrain(ax,ay,bx,by){
@@ -850,7 +960,9 @@
     const spawnY = (b.f===F.PLAYER) ? b.y - 10 : b.y + b.h + 12;
     const nu = spawn(spawnX, spawnY, b.f, b.current.kind);
     if(b.f===F.PLAYER){
-      nu.selected=true; world.selection.add(nu); updateSelectionHUD();
+      nu.spawnGlow = SPAWN_GLOW_TIME;
+      addClickFx(spawnX, spawnY, '#4dd0ff', 1.1);
+      showUnitReady(b.current.kind);
     } else if(world.enemyAI){
       world.enemyAI.unassigned.push(nu);
     }
@@ -911,22 +1023,30 @@
     }
 
     const barracks = getBarracks(F.ENEMY);
+    const PRODUCTION_INTERVAL = 5.6;
     if(barracks && barracks.hp>0){
-      if(ai.buildCooldown>0) ai.buildCooldown -= dt;
-      if(ai.buildCooldown<=0 && barracks.queue.length < 3){
-        const choice = (Math.random() < 0.7) ? 'rifleman' : 'grenadier';
-        const cost = choice==='rifleman'?50:100;
-        if(ai.credits >= cost){
-          ai.credits -= cost;
-          const baseTime = choice==='rifleman'?3:4;
-          const buildTime = baseTime * 1.4;
-          barracks.queue.push({kind:choice, time:buildTime});
-          if(!barracks.current) startNextInQueue(barracks);
-          ai.buildCooldown = 3 + Math.random()*3;
+      ai.productionTimer += dt;
+      if(ai.productionTimer >= PRODUCTION_INTERVAL){
+        const queueLimit = 2;
+        if(barracks.queue.length < queueLimit){
+          const choice = (Math.random() < 0.68) ? 'rifleman' : 'grenadier';
+          const cost = choice==='rifleman'?50:100;
+          if(ai.credits >= cost){
+            ai.credits -= cost;
+            const baseTime = choice==='rifleman'?3:4;
+            const buildTime = baseTime * 1.35;
+            barracks.queue.push({kind:choice, time:buildTime});
+            if(!barracks.current) startNextInQueue(barracks);
+            ai.productionTimer = 0;
+          } else {
+            ai.productionTimer = PRODUCTION_INTERVAL * 0.45;
+          }
         } else {
-          ai.buildCooldown = 1.5;
+          ai.productionTimer = PRODUCTION_INTERVAL * 0.5;
         }
       }
+    } else {
+      ai.productionTimer = 0;
     }
 
     ai.unassigned = ai.unassigned.filter(u => u.hp>0);
@@ -1064,6 +1184,7 @@
       const speed = Math.hypot(u.vx,u.vy);
       if(speed>0.01){ u.facing = Math.atan2(u.vy,u.vx); u.walk += dt * (4 + speed*4); }
       else { u.walk += dt*2; }
+      if(u.spawnGlow>0){ u.spawnGlow = Math.max(0, u.spawnGlow - dt); }
     }
 
     // Enemy seek
@@ -1084,16 +1205,20 @@
       let t=u.target; if(t && t.hp!==undefined && t.hp<=0) t=u.target=null;
 
       if(t){
-        const tx=t.x, ty=t.y, dist=Math.hypot(tx-u.x,ty-u.y);
-        const inRange=dist<=u.range;
+        const point = getEntityPoint(t);
+        const tx=point.x, ty=point.y;
+        const targetRadius = (t.entityType==='building') ? t.hitRadius : 0;
+        const dist=Math.hypot(tx-u.x,ty-u.y);
+        const effectiveDist = Math.max(0, dist - targetRadius);
+        const inRange=effectiveDist<=u.range;
         const canShoot = inRange && (u.unitType==='grenadier' ? true : !rifleBlocked(u.x,u.y,tx,ty));
         if(t.dummy){
-          moveToward(u,tx,ty,dt,true);
+          moveToward(u,tx,ty,dt,true,t);
           if(dist<6) u.target=null;
         } else if(canShoot){
           if(u.cd<=0){ fire(u,t); u.cd=0.5+Math.random()*0.2; }
         } else {
-          moveToward(u,tx,ty,dt,true);
+          moveToward(u,tx,ty,dt,true,t);
         }
       } else {
         const sep = separation(u);
@@ -1133,7 +1258,17 @@
         if(rifleBlocked(b.ox,b.oy,b.x+nx,b.y+ny)){ world.bullets.splice(i,1); continue; }
         b.x+=nx; b.y+=ny; b.life-=dt;
         const t=b.target;
-        if(t && t.hp>0 && Math.hypot(b.x-t.x,b.y-t.y)<t.r+3){ t.hp -= b.dmg; reactToAttack(t, b.from); world.bullets.splice(i,1); continue; }
+        if(t && t.hp>0){
+          if(t.entityType==='building'){
+            const center = getEntityPoint(t);
+            const inside = pointInBuilding(b.x,b.y,t) || Math.hypot(b.x-center.x,b.y-center.y)<t.hitRadius;
+            if(inside){ applyDamage(t,b.dmg,b.from); world.bullets.splice(i,1); continue; }
+          } else if(Math.hypot(b.x-t.x,b.y-t.y)<t.r+3){
+            applyDamage(t,b.dmg,b.from);
+            world.bullets.splice(i,1);
+            continue;
+          }
+        }
         if(b.life<=0){ world.bullets.splice(i,1); }
       }
     }
@@ -1158,14 +1293,30 @@
       if(u.f===F.PLAYER) world.stats.lost++; else world.stats.kills++;
       world.units.splice(i,1);
     }
+    for(let i=world.buildings.length-1;i>=0;i--){
+      const b=world.buildings[i];
+      if(b.damageFlash>0) b.damageFlash = Math.max(0, b.damageFlash - dt);
+      if(b.hp>0) continue;
+      world.buildings.splice(i,1);
+    }
     updateSelectionHUD();
 
     // Win/lose
-    const pAlive=world.units.some(u=>u.f===F.PLAYER), eAlive=world.units.some(u=>u.f===F.ENEMY);
-    if(!pAlive||!eAlive) endGame(pAlive && !eAlive);
+    const pAlive = world.units.some(u=>u.f===F.PLAYER) || world.buildings.some(b=>b.f===F.PLAYER && b.hp>0);
+    const eAlive = world.units.some(u=>u.f===F.ENEMY) || world.buildings.some(b=>b.f===F.ENEMY && b.hp>0);
+    if(!pAlive || !eAlive) endGame(pAlive && !eAlive);
   }
 
-  function moveToward(u,tx,ty,dt,applySep=false){
+  function moveToward(u,tx,ty,dt,applySep=false,target=null){
+    const stopRadius = (target && target.entityType==='building') ? (target.hitRadius + u.r + 4) : 0;
+    if(stopRadius){
+      const dist = Math.hypot(tx - u.x, ty - u.y);
+      if(dist <= stopRadius){
+        u.vx *= 0.6;
+        u.vy *= 0.6;
+        return;
+      }
+    }
     const ang=Math.atan2(ty-u.y,tx-u.x), sp=u.s;
     let vx=Math.cos(ang)*sp, vy=Math.sin(ang)*sp;
     if(applySep){
@@ -1192,18 +1343,20 @@
   }
 
   function fire(from,target){
+    const point = getEntityPoint(target);
+    const tx = point.x, ty = point.y;
     if(from.unitType==='grenadier'){
-      const dist = Math.hypot(target.x - from.x, target.y - from.y);
+      const dist = Math.hypot(tx - from.x, ty - from.y);
       const flight = clamp(0.55 + dist / 600, 0.55, 1.2);
       world.bullets.push({
         x:from.x, y:from.y, ox:from.x, oy:from.y,
-        tx:target.x, ty:target.y, target,
+        tx, ty, target,
         dmg:from.dmg, f:from.f, from,
         ballistic:true, t:0, tMax:flight,
         explosive:true, blastRadius:35
       });
     } else {
-      world.bullets.push({x:from.x,y:from.y,ox:from.x,oy:from.y,tx:target.x,ty:target.y,target,
+      world.bullets.push({x:from.x,y:from.y,ox:from.x,oy:from.y,tx,ty,target,
                           spd:5.5,dmg:from.dmg,life:.6,f:from.f,from,explosive:false});
     }
   }
@@ -1215,9 +1368,17 @@
       if(u.f===faction || u.hp<=0) continue;
       const dist=Math.hypot(u.x-x,u.y-y);
       if(dist<=radius){
-        const dd=Math.max(1, dmg*(1-dist/radius)); 
-        u.hp-=dd;
-        if(attacker) reactToAttack(u, attacker);
+        const dd=Math.max(1, dmg*(1-dist/radius));
+        applyDamage(u,dd,attacker);
+      }
+    }
+    for(const bld of world.buildings){
+      if(bld.f===faction || bld.hp<=0) continue;
+      const center = getEntityPoint(bld);
+      const dist = Math.max(0, Math.hypot(center.x - x, center.y - y) - bld.hitRadius*0.6);
+      if(dist<=radius){
+        const dd = Math.max(1, dmg*(1 - dist/Math.max(radius,1)));
+        applyDamage(bld, dd, attacker);
       }
     }
   }
@@ -1334,27 +1495,206 @@
     const x=s.x, y=s.y, w=b.w, h=b.h;
     if(x<-w||y<-h||x>VIEW_W||y>VIEW_H) return;
 
-    ctx.fillStyle='rgba(0,0,0,.35)'; ctx.fillRect(x+3,y+3,w,h);
-    ctx.fillStyle = isPlayer ? '#4a8bd3' : '#d34a4a';
-    roundRect(x,y,w,h,6,true,false);
-    ctx.fillStyle = isPlayer ? '#2d4a6b' : '#6b2d2d';
-    roundRect(x+4,y+4,w-8,14,4,true,false);
-    ctx.fillStyle = 'rgba(255,255,255,.15)'; ctx.fillRect(x+8,y+6,12,3); ctx.fillRect(x+w-20,y+6,12,3);
-    ctx.fillStyle = '#0e121d'; ctx.fillRect(x+w/2-6,y+h-16,12,16);
-    ctx.fillStyle = isPlayer ? '#3bd1ff' : '#ff6666';
-    ctx.fillRect(x+6,y-8,2,8); ctx.beginPath(); ctx.moveTo(x+8,y-8); ctx.lineTo(x+22,y-3); ctx.lineTo(x+8,y+2); ctx.closePath(); ctx.fill();
+    const ratio = Math.max(0, b.hp) / b.max;
+    const damaged = ratio <= 0.5;
 
-    ctx.fillStyle='#0e121d'; ctx.fillRect(x,y-10,w,4);
-    ctx.fillStyle='#36d399'; ctx.fillRect(x,y-10,w*(b.hp/b.max),4);
+    const baseColor = isPlayer ? '#4a8bd3' : '#d34a4a';
+    const roofColor = isPlayer ? '#2d4a6b' : '#6b2d2d';
+    const trimColor = isPlayer ? '#8ec4ff' : '#ffb1a1';
+
+    ctx.fillStyle='rgba(0,0,0,.35)';
+    ctx.fillRect(x+3,y+3,w,h);
+
+    ctx.fillStyle = baseColor;
+    roundRect(x,y,w,h,6,true,false);
+
+    if(damaged){
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(x+6,y+9,w-12,9);
+      ctx.fillStyle = 'rgba(120,60,60,0.35)';
+      ctx.beginPath();
+      ctx.moveTo(x+w/2-18,y+6);
+      ctx.lineTo(x+w/2+12,y+6);
+      ctx.lineTo(x+w/2+4,y+16);
+      ctx.lineTo(x+w/2-22,y+16);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(18,18,18,0.55)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(x+10,y+12);
+      ctx.lineTo(x+w/2-6,y+18);
+      ctx.lineTo(x+w/2-2,y+22);
+      ctx.moveTo(x+w-14,y+14);
+      ctx.lineTo(x+w-20,y+22);
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.beginPath();
+      ctx.moveTo(x+14,y+h-14);
+      ctx.lineTo(x+34,y+h-8);
+      ctx.lineTo(x+12,y+h-4);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillRect(x+6,y+8,w-12,6);
+    }
+
+    ctx.fillStyle = roofColor;
+    roundRect(x+4,y+4,w-8,14,4,true,false);
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillRect(x+8,y+6,12,3);
+    ctx.fillRect(x+w-20,y+6,12,3);
+
+    ctx.fillStyle = '#0e121d';
+    ctx.fillRect(x+w/2-6,y+h-16,12,16);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(x+w/2-4,y+h-14,8,2);
+
+    ctx.fillStyle = trimColor;
+    if(damaged){
+      ctx.fillRect(x+6,y-6,2,6);
+      ctx.beginPath();
+      ctx.moveTo(x+8,y-6);
+      ctx.lineTo(x+20,y-2);
+      ctx.lineTo(x+8,y+1);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      ctx.fillRect(x+6,y-8,2,8);
+      ctx.beginPath();
+      ctx.moveTo(x+8,y-8);
+      ctx.lineTo(x+22,y-3);
+      ctx.lineTo(x+8,y+2);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    if(b.damageFlash>0){
+      const alpha = 0.3 * (b.damageFlash/0.18);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#fef3c7';
+      roundRect(x,y,w,h,6,true,false);
+      ctx.restore();
+    }
+
+    drawStructureHealthBar(b,x,y,w);
 
     if(b.current){
-      const total = b.current.time; const prog = Math.max(0,1 - b.timeLeft/total);
-      ctx.fillStyle='#36d399'; ctx.fillRect(x,y-16,w*prog,4);
+      const total = b.current.time;
+      const prog = Math.max(0,1 - b.timeLeft/total);
+      ctx.fillStyle='#36d399';
+      ctx.fillRect(x,y-16,w*prog,4);
     }
     if(b.queue.length>0){
       ctx.fillStyle='#ffffff'; ctx.font='12px system-ui';
       ctx.fillText(`Queue: ${b.queue.length}`, x, y-20);
     }
+  }
+
+  function drawStronghold(b){
+    const s=worldToScreen(b.x,b.y);
+    const x=s.x, y=s.y, w=b.w, h=b.h;
+    if(x<-w||y<-h||x>VIEW_W||y>VIEW_H) return;
+
+    const ratio = Math.max(0, b.hp) / b.max;
+    const damaged = ratio <= 0.5;
+
+    ctx.fillStyle='rgba(0,0,0,0.4)';
+    ctx.fillRect(x+6,y+6,w,h);
+
+    ctx.fillStyle='#5a3a2a';
+    roundRect(x,y,w,h,10,true,false);
+
+    ctx.fillStyle='#7b5639';
+    ctx.beginPath();
+    ctx.ellipse(x+w/2,y+16,w*0.38,18,0,0,Math.PI*2);
+    ctx.fill();
+
+    ctx.fillStyle='#3b2920';
+    roundRect(x+16,y+22,w-32,h-36,8,true,false);
+
+    ctx.fillStyle='#8b5a32';
+    ctx.fillRect(x+18,y+h-32,w-36,12);
+
+    ctx.fillStyle='#2f2118';
+    ctx.fillRect(x+26,y+32,w-52,h-52);
+
+    ctx.fillStyle='#402a1d';
+    ctx.fillRect(x+8,y+20,16,h-26);
+    ctx.fillRect(x+w-24,y+20,16,h-26);
+
+    ctx.fillStyle='#22160f';
+    ctx.fillRect(x+12,y+34,8,22);
+    ctx.fillRect(x+w-20,y+34,8,22);
+
+    ctx.fillStyle='#f5d693';
+    ctx.fillRect(x+w/2-14,y+40,28,16);
+
+    ctx.fillStyle='#2f2118';
+    ctx.fillRect(x+w/2-12,y+h-24,24,24);
+    ctx.fillStyle='#f4d489';
+    ctx.fillRect(x+w/2-4,y+h-18,8,8);
+
+    if(damaged){
+      ctx.fillStyle='rgba(0,0,0,0.4)';
+      ctx.beginPath();
+      ctx.moveTo(x+24,y+34);
+      ctx.lineTo(x+46,y+24);
+      ctx.lineTo(x+54,y+46);
+      ctx.lineTo(x+30,y+52);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle='rgba(120,60,40,0.45)';
+      ctx.beginPath();
+      ctx.moveTo(x+w-44,y+26);
+      ctx.lineTo(x+w-18,y+34);
+      ctx.lineTo(x+w-32,y+60);
+      ctx.lineTo(x+w-58,y+54);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.strokeStyle='rgba(0,0,0,0.6)';
+      ctx.lineWidth=1.4;
+      ctx.beginPath();
+      ctx.moveTo(x+32,y+38);
+      ctx.lineTo(x+48,y+58);
+      ctx.moveTo(x+w-34,y+40);
+      ctx.lineTo(x+w-18,y+62);
+      ctx.stroke();
+
+      ctx.fillStyle='rgba(50,50,50,0.35)';
+      ctx.beginPath();
+      ctx.ellipse(x+w/2,y+14,w*0.42,20,0,0,Math.PI*2);
+      ctx.fill();
+    } else {
+      ctx.strokeStyle='rgba(255,255,255,0.15)';
+      ctx.lineWidth=2;
+      ctx.strokeRect(x+24,y+34,w-48,h-56);
+    }
+
+    if(b.damageFlash>0){
+      const alpha = 0.25 + 0.35*(b.damageFlash/0.18);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#fef3c7';
+      roundRect(x,y,w,h,10,true,false);
+      ctx.restore();
+    }
+
+    drawStructureHealthBar(b,x,y,w);
+  }
+
+  function drawStructureHealthBar(b,x,y,w){
+    const ratio = Math.max(0, Math.min(1, b.hp / b.max));
+    ctx.fillStyle='#0e121d';
+    ctx.fillRect(x,y-10,w,4);
+    ctx.fillStyle='#36d399';
+    ctx.fillRect(x,y-10,w*ratio,4);
   }
 
   function roundRect(x,y,w,h,r,fill,stroke){
@@ -1366,32 +1706,152 @@
     if(fill) ctx.fill(); if(stroke) ctx.stroke();
   }
 
-  function drawBuildings(){ for(const b of world.buildings){ drawBarracks(b); } }
+  function drawBuildings(){
+    for(const b of world.buildings){
+      if(b.hp<=0) continue;
+      if(b.type===BUILDING_TYPES.BARRACKS) drawBarracks(b);
+      else if(b.type===BUILDING_TYPES.STRONGHOLD) drawStronghold(b);
+    }
+  }
 
   // Animated soldier
   function drawSoldier(u){
     const s=worldToScreen(u.x,u.y);
     if(s.x<-30||s.y<-30||s.x>VIEW_W+30||s.y>VIEW_H+30) return;
 
+    if(u.spawnGlow>0){
+      const ratio = clamp(u.spawnGlow / SPAWN_GLOW_TIME, 0, 1);
+      ctx.save();
+      ctx.translate(s.x,s.y);
+      const ringRadius = u.r + 10 + (1 - ratio) * 6;
+      ctx.globalAlpha = 0.35 + 0.45 * ratio;
+      ctx.fillStyle = `rgba(77,208,255,${0.12 + 0.18*ratio})`;
+      ctx.beginPath(); ctx.arc(0,0, ringRadius + 4, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle = '#4dd0ff';
+      ctx.lineWidth = 2 + (1 - ratio) * 2;
+      ctx.beginPath(); ctx.arc(0,0, ringRadius, 0, Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
+
     const dir = u.facing;
     ctx.save(); ctx.translate(s.x,s.y); ctx.rotate(dir);
 
-    ctx.fillStyle='rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(2,3,u.r*0.9,u.r*0.6,0,0,Math.PI*2); ctx.fill();
+    const palette = UNIT_PALETTES[u.f] || UNIT_PALETTES[F.PLAYER];
+    const isGrenadier = u.unitType === 'grenadier';
+    const topColor = isGrenadier ? palette.grenTop : palette.rifleTop;
+    const accentColor = isGrenadier ? palette.grenAccent : palette.rifleAccent;
+    const pouchColor = isGrenadier ? palette.grenPouch : palette.riflePouch;
 
-    const swing = Math.sin(u.walk)*3.2, backSwing = -Math.sin(u.walk)*3.2;
-    ctx.strokeStyle = '#1c2535'; ctx.lineWidth=2;
-    ctx.beginPath(); ctx.moveTo(-2,4); ctx.lineTo(-2,4+swing); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo( 2,4); ctx.lineTo( 2,4+backSwing); ctx.stroke();
+    ctx.fillStyle='rgba(0,0,0,.25)';
+    ctx.beginPath(); ctx.ellipse(2,3,u.r*0.9,u.r*0.6,0,0,Math.PI*2); ctx.fill();
 
-    const bodyColor = (u.f===F.PLAYER)?'#4a6b8a':'#8a4a4a';
-    ctx.fillStyle=bodyColor; ctx.fillRect(-3,-2,6,8);
+    const swing = Math.sin(u.walk)*3.2;
+    const backSwing = -swing;
 
-    ctx.fillStyle='#f4c2a1'; ctx.fillRect(-2.2,-6,4.4,3);
-    ctx.fillStyle=(u.f===F.PLAYER)?'#2d4a6b':'#6b2d2d'; ctx.fillRect(-3,-7,6,2);
+    ctx.strokeStyle = palette.boots;
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(-1.6,4.1); ctx.lineTo(-1.6,4.1 + swing); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo( 1.6,4.1); ctx.lineTo( 1.6,4.1 + backSwing); ctx.stroke();
+    ctx.lineCap = 'butt';
 
-    ctx.fillStyle='#303030';
-    if(u.unitType==='grenadier'){ ctx.fillRect(4,-1,6,2); ctx.fillRect(10,-2,2,4); }
-    else { ctx.fillRect(3,-1,7,1.5); ctx.fillRect(10,-2,1.5,3); }
+    ctx.fillStyle = palette.uniformShadow;
+    ctx.beginPath();
+    ctx.moveTo(-3,-2.2); ctx.lineTo(3,-2.2); ctx.lineTo(2.6,3.8); ctx.lineTo(-2.6,3.8);
+    ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle = palette.uniformBase;
+    ctx.beginPath();
+    ctx.moveTo(-2.6,-2); ctx.lineTo(2.6,-2); ctx.lineTo(2.3,3.4); ctx.lineTo(-2.3,3.4);
+    ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle = topColor;
+    ctx.beginPath();
+    ctx.moveTo(-2.6,-2.6); ctx.lineTo(2.6,-2.6); ctx.lineTo(2.2,-0.2); ctx.lineTo(-2.2,-0.2);
+    ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(-2.4,-2.5,4.8,0.6);
+    ctx.fillStyle = accentColor;
+    ctx.fillRect(-2.4,-2,4.8,0.45);
+
+    ctx.strokeStyle = palette.strap;
+    ctx.lineWidth = 1.1;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-2.4,-2.3); ctx.lineTo(1.8,3.2); ctx.stroke();
+    if(isGrenadier){
+      ctx.beginPath(); ctx.moveTo(2.3,-2); ctx.lineTo(-1.6,3.2); ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+
+    ctx.fillStyle = palette.strap;
+    ctx.fillRect(-2.6,1.6,5.2,1.1);
+
+    ctx.fillStyle = pouchColor;
+    if(isGrenadier){
+      ctx.fillRect(-2.1,0.8,4.2,2);
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(-0.7,0.8); ctx.lineTo(-0.7,2.8); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0.9,0.8); ctx.lineTo(0.9,2.8); ctx.stroke();
+    } else {
+      const pouchW = 1.2;
+      ctx.fillRect(-2.6,0.7,pouchW,1.4);
+      ctx.fillRect(-0.6,0.7,pouchW,1.4);
+      ctx.fillRect(1.4,0.7,pouchW,1.4);
+    }
+
+    ctx.strokeStyle = palette.uniformBase;
+    ctx.lineWidth = 2.3;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-2.6,-0.8); ctx.lineTo(-4.6,0.8 + swing*0.2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo( 2.6,-0.8); ctx.lineTo( 4.6,0.8 + backSwing*0.2); ctx.stroke();
+
+    ctx.strokeStyle = palette.gloves;
+    ctx.lineWidth = 2.6;
+    ctx.beginPath(); ctx.moveTo(-4.6,0.8 + swing*0.2); ctx.lineTo(-4.3,1.4 + swing*0.2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo( 4.6,0.8 + backSwing*0.2); ctx.lineTo( 4.3,1.4 + backSwing*0.2); ctx.stroke();
+    ctx.lineCap = 'butt';
+
+    ctx.fillStyle = '#f4cfa6';
+    ctx.beginPath(); ctx.ellipse(0,-5.2,2.1,1.9,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    ctx.beginPath(); ctx.arc(-0.6,-5.1,0.35,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0.6,-5.1,0.35,0,Math.PI*2); ctx.fill();
+    ctx.fillRect(-1.1,-4.5,2.2,0.35);
+
+    const hatGrad = ctx.createLinearGradient(-3,-6.8,3,-4.8);
+    hatGrad.addColorStop(0, palette.hatDark);
+    hatGrad.addColorStop(1, palette.hatLight);
+    ctx.fillStyle = hatGrad;
+    ctx.fillRect(-3,-6.8,6,2.2);
+    ctx.fillStyle = palette.hatBand;
+    ctx.fillRect(-3,-5.55,6,0.5);
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.fillRect(-2.6,-6.6,2.4,0.35);
+    ctx.fillStyle = palette.hatDark;
+    ctx.beginPath(); ctx.ellipse(0,-4.8,3.1,0.6,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = palette.uniformShadow;
+    ctx.fillRect(-2,-3.4,4,0.8);
+
+    ctx.fillStyle = palette.weapon;
+    if(isGrenadier){
+      ctx.fillRect(3.2,-0.8,8,1.6);
+      ctx.fillRect(10.8,-2,2.8,4);
+      ctx.fillRect(4.2,-2.6,1.4,2.4);
+      ctx.fillStyle = palette.weaponLight;
+      ctx.fillRect(3.2,-0.8,8,0.45);
+      ctx.fillStyle = accentColor;
+      ctx.beginPath(); ctx.arc(12.2,0,1.6,0,Math.PI*2); ctx.fill();
+    } else {
+      ctx.fillRect(3.2,-0.7,8.4,1.3);
+      ctx.fillRect(10.4,-1.6,2.8,2.4);
+      ctx.fillRect(4.6,0,2.4,1);
+      ctx.fillStyle = palette.weaponLight;
+      ctx.fillRect(3.2,-0.7,8.4,0.35);
+      ctx.fillStyle = accentColor;
+      ctx.fillRect(4.6,0.1,2.4,0.45);
+    }
 
     if(u.selected){ ctx.strokeStyle='#d7f5ff'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(0,0,u.r+3,0,Math.PI*2); ctx.stroke(); }
     ctx.restore();
@@ -1457,6 +1917,17 @@
     if(orderFlashTimer) clearTimeout(orderFlashTimer);
     orderFlashTimer = setTimeout(()=>orderFlash.classList.remove('show'), 700);
   }
+  function showUnitReady(kind){
+    if(!unitReadyNotice) return;
+    const pretty = kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : 'Unit';
+    unitReadyNotice.textContent = `Unit ready: ${pretty}`;
+    unitReadyNotice.classList.add('show');
+    if(unitReadyTimer) clearTimeout(unitReadyTimer);
+    unitReadyTimer = setTimeout(()=>{
+      unitReadyNotice.classList.remove('show');
+      unitReadyTimer=null;
+    }, 1800);
+  }
 
   // Fog overlay on current viewport
   function drawFog(){ ctx.drawImage(fogCanvas, cam.x, cam.y, VIEW_W, VIEW_H, 0, 0, VIEW_W, VIEW_H); }
@@ -1486,6 +1957,14 @@
       mctx.drawImage(temp,0,0);
       mctx.globalAlpha = 1;
     }catch(_e){}
+
+    for(const b of world.buildings){
+      if(b.hp<=0) continue;
+      mctx.fillStyle = (b.f===F.PLAYER)?'#5fd4ff':'#ff9966';
+      const bw = Math.max(2, Math.round(b.w * mScaleX));
+      const bh = Math.max(2, Math.round(b.h * mScaleY));
+      mctx.fillRect(Math.floor(b.x*mScaleX), Math.floor(b.y*mScaleY), bw, bh);
+    }
 
     mctx.strokeStyle = '#8ab4ff'; mctx.lineWidth = 1;
     mctx.strokeRect(cam.x*mScaleX, cam.y*mScaleY, VIEW_W*mScaleX, VIEW_H*mScaleY);
@@ -1525,8 +2004,11 @@
     drawFog();
 
     ctx.fillStyle='#ffffff'; ctx.font='bold 14px system-ui';
-    const p=world.units.filter(u=>u.f===F.PLAYER).length, e=world.units.filter(u=>u.f===F.ENEMY).length;
-    ctx.fillText(`Credits: ${world.resources.credits}  |  Troops: ${p}  |  Hostiles: ${e}`,10,20);
+    const p=world.units.filter(u=>u.f===F.PLAYER).length;
+    const e=world.units.filter(u=>u.f===F.ENEMY).length;
+    const friendlyStructures = world.buildings.filter(b=>b.f===F.PLAYER && b.hp>0).length;
+    const enemyStructures = world.buildings.filter(b=>b.f===F.ENEMY && b.hp>0).length;
+    ctx.fillText(`Credits: ${world.resources.credits}  |  Troops: ${p} (bases ${friendlyStructures})  |  Hostiles: ${e} (enemy bases ${enemyStructures})`,10,20);
     const b = getBarracks(F.PLAYER);
     if(b){
       if(b.current){

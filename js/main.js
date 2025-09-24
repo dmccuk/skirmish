@@ -95,7 +95,7 @@
   // --- Camera panning state ---
   const PAN_SPEED = 520;
   const PAN_SPEED_FAST = 980;
-  const EDGE_BAND = 40;
+  const EDGE_BAND = 60;
   let keys = new Set();
   let isPanningDrag = false;
   let dragStartScreen = null;
@@ -272,6 +272,7 @@
       selection:new Set(), selBox:null,
       ended:false, stats:{lost:0,kills:0,timeStart:performance.now()},
       resources:{credits:500},
+      enemyAI:{credits:300,incomeTimer:0,buildCooldown:2,unassigned:[],squads:[],groupTimer:5},
       clickFx:[]
     };
 
@@ -289,15 +290,22 @@
       hp:260, max:260, queue:[], current:null, timeLeft:0
     });
 
+    // Enemy barracks
+    world.buildings.push({
+      type:BUILDING_TYPES.BARRACKS, f:F.ENEMY, x:2020, y:280, w:70, h:46,
+      hp:260, max:260, queue:[], current:null, timeLeft:0
+    });
+
     // Player squad
     for(let i=0;i<6;i++){ const u=spawn(220+(i%3)*22,MAP_H-120+Math.floor(i/3)*26,F.PLAYER,'rifleman'); u.selected=true; world.selection.add(u); }
     for(let i=0;i<2;i++){ const u=spawn(300+(i*22),MAP_H-120,F.PLAYER,'grenadier'); u.selected=true; world.selection.add(u); }
     updateSelectionHUD();
 
     // Enemies
-    for(let i=0;i<8;i++) spawn(1800+(i%4)*26,320+Math.floor(i/4)*26,F.ENEMY,'rifleman');
-    for(let i=0;i<3;i++) spawn(1950+(i*26),420,F.ENEMY,'grenadier');
-    for(let i=0;i<6;i++) spawn(2100+(i%3)*26,900+Math.floor(i/3)*26,F.ENEMY,'rifleman');
+    const enemyAI = world.enemyAI;
+    for(let i=0;i<8;i++) enemyAI.unassigned.push(spawn(1800+(i%4)*26,320+Math.floor(i/4)*26,F.ENEMY,'rifleman'));
+    for(let i=0;i<3;i++) enemyAI.unassigned.push(spawn(1950+(i*26),420,F.ENEMY,'grenadier'));
+    for(let i=0;i<6;i++) enemyAI.unassigned.push(spawn(2100+(i%3)*26,900+Math.floor(i/3)*26,F.ENEMY,'rifleman'));
 
     // Start camera near base
     centerCamera(260, MAP_H-120);
@@ -529,6 +537,142 @@
     }
   }
 
+  function processBarracks(b, dt){
+    if(!b || b.hp<=0) return;
+    if(!b.current && b.queue.length>0){ startNextInQueue(b); }
+    if(!b.current) return;
+    b.timeLeft -= dt;
+    if(b.timeLeft>0) return;
+    const spawnX = b.x + b.w/2 + (Math.random()-0.5)*20;
+    const spawnY = (b.f===F.PLAYER) ? b.y - 10 : b.y + b.h + 12;
+    const nu = spawn(spawnX, spawnY, b.f, b.current.kind);
+    if(b.f===F.PLAYER){
+      nu.selected=true; world.selection.add(nu); updateSelectionHUD();
+    } else if(world.enemyAI){
+      world.enemyAI.unassigned.push(nu);
+    }
+    b.current=null;
+    b.timeLeft=0;
+    startNextInQueue(b);
+  }
+
+  function playerCentroid(){
+    let sx=0, sy=0, count=0;
+    for(const u of world.units){
+      if(u.f===F.PLAYER && u.hp>0){ sx+=u.x; sy+=u.y; count++; }
+    }
+    if(count===0) return {x:MAP_W*0.35,y:MAP_H*0.75};
+    return {x:sx/count, y:sy/count};
+  }
+
+  function squadCenter(members){
+    let sx=0, sy=0;
+    for(const m of members){ sx+=m.x; sy+=m.y; }
+    return {x:sx/members.length, y:sy/members.length};
+  }
+
+  function findClosestPlayerTarget(center){
+    let best=null, bestDist=Infinity;
+    for(const u of world.units){
+      if(u.f!==F.PLAYER || u.hp<=0) continue;
+      const d = Math.hypot(u.x-center.x, u.y-center.y);
+      if(d < bestDist){ bestDist=d; best=u; }
+    }
+    return best ? {unit:best, distance:bestDist} : null;
+  }
+
+  function chooseEnemySearchPoint(origin){
+    const centroid = playerCentroid();
+    let baseX = centroid.x;
+    let baseY = Math.max(centroid.y, MAP_H*0.55);
+    const offsetX = (Math.random()-0.5)*480;
+    const offsetY = (Math.random()-0.4)*360;
+    let destX = clamp(baseX + offsetX, 80, MAP_W-80);
+    let destY = clamp(baseY + offsetY, MAP_H*0.35, MAP_H-80);
+    if(origin && Math.random()<0.3){
+      destX = clamp(origin.x + (Math.random()-0.5)*520, 80, MAP_W-80);
+      destY = clamp(origin.y + (Math.random()-0.5)*520, MAP_H*0.3, MAP_H-80);
+    }
+    return {x:destX, y:destY};
+  }
+
+  function updateEnemyAI(dt){
+    const ai = world.enemyAI;
+    if(!ai) return;
+
+    ai.incomeTimer += dt;
+    const INCOME_INTERVAL = 3.5;
+    if(ai.incomeTimer >= INCOME_INTERVAL){
+      ai.credits += 8;
+      ai.incomeTimer -= INCOME_INTERVAL;
+    }
+
+    const barracks = getBarracks(F.ENEMY);
+    if(barracks && barracks.hp>0){
+      if(ai.buildCooldown>0) ai.buildCooldown -= dt;
+      if(ai.buildCooldown<=0 && barracks.queue.length < 3){
+        const choice = (Math.random() < 0.7) ? 'rifleman' : 'grenadier';
+        const cost = choice==='rifleman'?50:100;
+        if(ai.credits >= cost){
+          ai.credits -= cost;
+          const baseTime = choice==='rifleman'?3:4;
+          const buildTime = baseTime * 1.4;
+          barracks.queue.push({kind:choice, time:buildTime});
+          if(!barracks.current) startNextInQueue(barracks);
+          ai.buildCooldown = 3 + Math.random()*3;
+        } else {
+          ai.buildCooldown = 1.5;
+        }
+      }
+    }
+
+    ai.unassigned = ai.unassigned.filter(u => u.hp>0);
+    ai.groupTimer += dt;
+
+    if(ai.unassigned.length >= 2 && ai.groupTimer >= 4){
+      const maxSize = Math.min(5, ai.unassigned.length);
+      const size = Math.floor(Math.random() * (maxSize - 1)) + 2;
+      const members = ai.unassigned.splice(0, size);
+      ai.squads.push({members, waypoint:null, targetUnit:null, reassign:0});
+      ai.groupTimer = 0;
+    }
+
+    for(let i=ai.squads.length-1;i>=0;i--){
+      const squad = ai.squads[i];
+      squad.members = squad.members.filter(u => u.hp>0);
+      if(squad.members.length===0){ ai.squads.splice(i,1); continue; }
+
+      const center = squadCenter(squad.members);
+      const targetInfo = findClosestPlayerTarget(center);
+      if(targetInfo && targetInfo.distance <= 420){
+        squad.targetUnit = targetInfo.unit;
+        squad.waypoint = null;
+        squad.reassign = 0;
+        for(const m of squad.members){
+          if(m.target !== targetInfo.unit) m.target = targetInfo.unit;
+        }
+        continue;
+      }
+
+      squad.targetUnit = null;
+      squad.reassign += dt;
+
+      if(squad.waypoint){
+        const dist = Math.hypot(center.x - squad.waypoint.x, center.y - squad.waypoint.y);
+        if(dist < 60 || squad.reassign > 12){
+          squad.waypoint = null;
+        }
+      }
+
+      if(!squad.waypoint){
+        const dest = chooseEnemySearchPoint(center);
+        assignFormationMove(squad.members, dest.x, dest.y);
+        squad.waypoint = dest;
+        squad.reassign = 0;
+      }
+    }
+  }
+
   // --- Formation assignment ---
   function assignFormationMove(units, tx, ty){
     if(units.length===0) return;
@@ -607,6 +751,8 @@
     })();
 
     if(world.tAccum>=2){ world.resources.credits+=10; world.tAccum=0; }
+
+    updateEnemyAI(dt);
 
     // Cooldowns + walk anim + reveal
     for(const u of world.units){
@@ -693,19 +839,8 @@
     if(world.explosions){ for(let i=world.explosions.length-1;i>=0;i--){ const e=world.explosions[i]; e.life-=dt; if(e.life<=0) world.explosions.splice(i,1); } }
 
     // Barracks production
-    const b = getBarracks(F.PLAYER);
-    if(b && b.hp>0){
-      if(!b.current && b.queue.length>0){ startNextInQueue(b); }
-      if(b.current){
-        b.timeLeft -= dt;
-        if(b.timeLeft<=0){
-          const spawnX=b.x+b.w/2+(Math.random()-0.5)*20, spawnY=b.y-10;
-          const nu=spawn(spawnX,spawnY,b.f,b.current.kind);
-          nu.selected=true; world.selection.add(nu); updateSelectionHUD();
-          b.current=null; b.timeLeft=0; startNextInQueue(b);
-        }
-      }
-    }
+    processBarracks(getBarracks(F.PLAYER), dt);
+    processBarracks(getBarracks(F.ENEMY), dt);
 
     // Click FX progress
     for(let i=world.clickFx.length-1;i>=0;i--){

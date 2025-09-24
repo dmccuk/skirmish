@@ -1,7 +1,7 @@
 (() => {
   // -------- Viewport & World sizes --------
   const VIEW_W=960, VIEW_H=600; // canvas size
-  const MAP_W=2400, MAP_H=1600; // large map
+  const MAP_W=2400, MAP_H=1584; // large map (aligned to TILE_SIZE)
   const ctx=document.getElementById('c').getContext('2d');
   ctx.canvas.width = VIEW_W; ctx.canvas.height = VIEW_H;
 
@@ -73,7 +73,7 @@
 
   // Tile constants
   const TILE = { PLAIN:0, FOREST:1, WATER:2, ROCK:3 };
-  const TILE_SIZE = 50;
+  const TILE_SIZE = 24;
   const GRID_W = MAP_W / TILE_SIZE;
   const GRID_H = MAP_H / TILE_SIZE;
 
@@ -494,11 +494,15 @@
         if(inBounds(cx,cy)) tilemap[idx(cx,cy)] = 2; // WATER
       }
     }
-    const bridges = [10, 24, 38, 46];
-    for(const bx of bridges){
-      for(let by=0; by<GRID_H; by++){
-        if(inBounds(bx,by))   tilemap[idx(bx,by)]   = 0;
-        if(inBounds(bx+1,by)) tilemap[idx(bx+1,by)] = 0;
+    const bridgeWorldX = [500, 1200, 1900, 2300];
+    const bridgeCols = Math.min(GRID_W, Math.max(2, Math.round(100 / TILE_SIZE)));
+    for(const px of bridgeWorldX){
+      const start = clamp(Math.round(px / TILE_SIZE), 0, GRID_W - bridgeCols);
+      for(let dx=0; dx<bridgeCols; dx++){
+        const bx = start + dx;
+        for(let by=0; by<GRID_H; by++){
+          if(inBounds(bx,by)) tilemap[idx(bx,by)] = 0;
+        }
       }
     }
   }

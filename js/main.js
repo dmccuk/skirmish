@@ -95,7 +95,7 @@
   // --- Camera panning state ---
   const PAN_SPEED = 520;
   const PAN_SPEED_FAST = 980;
-  const EDGE_BAND = 18;
+  const EDGE_BAND = 40;
   let keys = new Set();
   let isPanningDrag = false;
   let dragStartScreen = null;
@@ -111,6 +111,10 @@
   }
   function worldToScreen(x,y){ return { x: x - cam.x, y: y - cam.y }; }
   function screenToWorld(x,y){ return { x: x + cam.x, y: y + cam.y }; }
+  function edgeEase(dist){
+    const t = Math.max(0, Math.min(1, dist / EDGE_BAND));
+    return t * t;
+  }
 
   // Minimap interaction
   mini.addEventListener('pointerdown', (e)=>{
@@ -319,9 +323,17 @@
   }
 
   // --- Input (pointer) + cursor logic ---
-  let pointer={x:0,y:0,down:false,dragStart:null,dragging:false, overEnemy:false};
+  let pointer={x:cam.x+VIEW_W/2,y:cam.y+VIEW_H/2,down:false,dragStart:null,dragging:false, overEnemy:false,inside:false};
   const DRAG_THRESH=8;
   const canvas=ctx.canvas;
+
+  canvas.addEventListener('pointerenter', () => { pointer.inside=true; });
+  canvas.addEventListener('pointerleave', () => {
+    pointer.inside=false;
+    pointer.overEnemy=false;
+    pointer.x=cam.x+VIEW_W/2;
+    pointer.y=cam.y+VIEW_H/2;
+  });
 
   // Keyboard pan
   window.addEventListener('keydown', (e) => {
@@ -353,6 +365,7 @@
     // selection start
     canvas.setPointerCapture(e.pointerId);
     const p=screenToWorld(...Object.values(pos(e)));
+    pointer.inside=true;
     pointer.x=p.x; pointer.y=p.y; pointer.down=true; pointer.dragStart={x:p.x,y:p.y}; pointer.dragging=false;
     world.selBox={x:p.x,y:p.y,w:0,h:0};
   }, { capture: true });
@@ -365,7 +378,7 @@
       return;
     }
     const s=pos(e); const p=screenToWorld(s.x,s.y);
-    pointer.x=p.x; pointer.y=p.y;
+    pointer.x=p.x; pointer.y=p.y; pointer.inside=true;
     const hasSelection = world.selection.size>0;
     const spaceHeld = keys.has(' ') || keys.has('Space');
     pointer.overEnemy = !!unitAt(p.x,p.y,F.ENEMY);
@@ -569,17 +582,27 @@
 
     // Edge scroll
     (function edgeScroll(){
-      if (isPanningDrag) return;
+      if (isPanningDrag || !pointer.inside) return;
       const screenX = pointer.x - cam.x;
       const screenY = pointer.y - cam.y;
-      let ex = 0, ey = 0;
-      if (screenX <= EDGE_BAND) ex = -1;
-      else if (screenX >= VIEW_W - EDGE_BAND) ex = 1;
-      if (screenY <= EDGE_BAND) ey = -1;
-      else if (screenY >= VIEW_H - EDGE_BAND) ey = 1;
-      if (ex || ey) {
+      let vx = 0, vy = 0;
+      if (screenX <= EDGE_BAND) {
+        const dist = EDGE_BAND - screenX;
+        vx = -edgeEase(dist);
+      } else if (screenX >= VIEW_W - EDGE_BAND) {
+        const dist = screenX - (VIEW_W - EDGE_BAND);
+        vx = edgeEase(dist);
+      }
+      if (screenY <= EDGE_BAND) {
+        const dist = EDGE_BAND - screenY;
+        vy = -edgeEase(dist);
+      } else if (screenY >= VIEW_H - EDGE_BAND) {
+        const dist = screenY - (VIEW_H - EDGE_BAND);
+        vy = edgeEase(dist);
+      }
+      if (vx || vy) {
         const speed = PAN_SPEED * 0.8;
-        panBy(ex * speed * dt, ey * speed * dt);
+        panBy(vx * speed * dt, vy * speed * dt);
       }
     })();
 

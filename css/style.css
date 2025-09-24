@@ -1,0 +1,62 @@
+html,body{height:100%;margin:0;background:#0b0e16;color:#e6e8ef;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    #ui{position:fixed;left:0;right:0;top:0;padding:8px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+        background:linear-gradient(180deg,rgba(11,14,22,.9),rgba(11,14,22,0));font-size:14px;z-index:4}
+    .pill{background:#121827;border:1px solid #1e2639;padding:6px 10px;border-radius:999px}
+    #wrap{height:100%;display:grid;place-items:center}
+    canvas#c{touch-action:none;border:1px solid #1e2639;border-radius:12px;background:#0f1424;
+           box-shadow:0 10px 30px rgba(0,0,0,.35)}
+    #overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(5,8,16,.65);z-index:6}
+    #panel{background:#0f1424;border:1px solid #1e2639;padding:24px;border-radius:16px;text-align:center;max-width:520px}
+    button{background:#1b2a4a;border:1px solid #2a3b65;color:#e6e8ef;padding:10px 14px;border-radius:10px;cursor:pointer}
+    #btns{display:flex;gap:8px}
+    input[type=file]{display:none}
+    .spacer{flex:1 1 0}
+    #audioControls{display:flex;gap:6px;align-items:center}
+    #volumeSlider{width:80px}
+
+    /* Selection HUD */
+    #selHUD{
+      position:fixed;left:12px;top:64px;z-index:3;
+      background:#0f1424;border:1px solid #1e2639;border-radius:12px;
+      padding:10px; min-width:180px; max-width:260px;
+      box-shadow:0 8px 22px rgba(0,0,0,.35)
+    }
+    #selHUD h4{margin:0 0 8px 0;font-size:12px;color:#aab4d0;display:flex;justify-content:space-between;gap:8px}
+    #selHUD .grid{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+    .tile{position:relative;height:24px;border-radius:6px;border:1px solid #243151;background:#18223a;display:flex;align-items:center;justify-content:center;font-size:11px;color:#dce6ff}
+    .tile.rifle{background:#294160;border-color:#345180}
+    .tile.gren{background:#6b3d1f;border-color:#8a5a2e}
+    .hpbar{position:absolute;left:2px;right:2px;bottom:2px;height:3px;background:#0b1120;border-radius:3px;overflow:hidden}
+    .hpbar>span{display:block;height:100%;background:#36d399}
+    #orderFlash{margin-top:6px;font-size:11px;color:#cfe8ff;opacity:0;transition:opacity .25s ease}
+    #orderFlash.show{opacity:1}
+
+    /* Minimap */
+    #minimapWrap{
+      position:fixed;right:12px;top:64px;z-index:3;
+      background:#0f1424;border:1px solid #1e2639;border-radius:12px;
+      padding:8px;box-shadow:0 8px 22px rgba(0,0,0,.35)
+    }
+    #minimap{display:block;border-radius:8px;border:1px solid #1e2639;background:#192233}
+    #miniLabel{font-size:12px;color:#aab4d0;margin-bottom:6px}
+
+    /* Help modal */
+    #helpModal{
+      position:fixed; inset:0; display:none; z-index:7;
+      align-items:center; justify-content:center;
+      background:rgba(5,8,16,.65);
+    }
+    #helpCard{
+      background:#0f1424;border:1px solid #1e2639;border-radius:16px;
+      padding:20px; max-width:760px; color:#e6e8ef;
+      box-shadow:0 20px 50px rgba(0,0,0,.45)
+    }
+    #helpCard h2{margin:0 0 8px 0}
+    #helpCard .grid{display:grid;grid-template-columns:repeat(2,minmax(240px,1fr));gap:10px}
+    #helpCard kbd{background:#121827;border:1px solid #1e2639;border-bottom-color:#121a2d;
+      padding:2px 6px;border-radius:6px;font-size:12px}
+    #helpCard ul{margin:8px 0 0 18px}
+    #helpBtn{font-weight:700}
+    .legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
+    .chip{display:inline-flex;align-items:center;gap:6px;background:#121827;border:1px solid #1e2639;border-radius:999px;padding:4px 8px;font-size:12px}
+    .box{width:14px;height:14px;border-radius:3px}

@@ -1,7 +1,7 @@
 (() => {
   // -------- Viewport & World sizes --------
   const VIEW_W=960, VIEW_H=600; // canvas size
-  const MAP_W=2400, MAP_H=1600; // large map
+  const MAP_W=2400, MAP_H=1584; // large map (aligned to TILE_SIZE)
   const ctx=document.getElementById('c').getContext('2d');
   ctx.canvas.width = VIEW_W; ctx.canvas.height = VIEW_H;
 
@@ -35,6 +35,8 @@
   const selGridEl  = document.getElementById('selGrid');
   const orderFlash = document.getElementById('orderFlash');
   let orderFlashTimer=null;
+  const unitReadyNotice = document.getElementById('unitReadyNotice');
+  let unitReadyTimer=null;
 
   // --- Audio ---
   const bgm = new Audio('assets/skirmish1.mp3'); bgm.loop = true; bgm.volume = parseFloat(volumeSlider.value);
@@ -67,10 +69,11 @@
   const BUILDING_TYPES = {BARRACKS:'barracks'};
   const VISION_RADIUS=100; // Fog reveal radius
   const SEP_RADIUS = 18, SEP_FORCE = 65;
+  const SPAWN_GLOW_TIME = 1.6;
 
   // Tile constants
   const TILE = { PLAIN:0, FOREST:1, WATER:2, ROCK:3 };
-  const TILE_SIZE = 50;
+  const TILE_SIZE = 24;
   const GRID_W = MAP_W / TILE_SIZE;
   const GRID_H = MAP_H / TILE_SIZE;
 
@@ -491,11 +494,15 @@
         if(inBounds(cx,cy)) tilemap[idx(cx,cy)] = 2; // WATER
       }
     }
-    const bridges = [10, 24, 38, 46];
-    for(const bx of bridges){
-      for(let by=0; by<GRID_H; by++){
-        if(inBounds(bx,by))   tilemap[idx(bx,by)]   = 0;
-        if(inBounds(bx+1,by)) tilemap[idx(bx+1,by)] = 0;
+    const bridgeWorldX = [500, 1200, 1900, 2300];
+    const bridgeCols = Math.min(GRID_W, Math.max(2, Math.round(100 / TILE_SIZE)));
+    for(const px of bridgeWorldX){
+      const start = clamp(Math.round(px / TILE_SIZE), 0, GRID_W - bridgeCols);
+      for(let dx=0; dx<bridgeCols; dx++){
+        const bx = start + dx;
+        for(let by=0; by<GRID_H; by++){
+          if(inBounds(bx,by)) tilemap[idx(bx,by)] = 0;
+        }
       }
     }
   }
@@ -580,6 +587,12 @@
       clickFx:[]
     };
 
+    if(unitReadyTimer){ clearTimeout(unitReadyTimer); unitReadyTimer=null; }
+    if(unitReadyNotice){
+      unitReadyNotice.classList.remove('show');
+      unitReadyNotice.textContent='';
+    }
+
     // Build tilemap with lower density
     tilemap = new Uint8Array(GRID_W*GRID_H).fill(0); // PLAIN
     carveRiverAndBridges();
@@ -629,7 +642,8 @@
       hp:base.hp, max:base.max, range:base.range, dmg:base.dmg, s:base.s,
       cd:0, unitType,
       target:null, vx:0, vy:0, facing:0, walk:0,
-      selected:false, wander:Math.random()*6.28
+      selected:false, wander:Math.random()*6.28,
+      spawnGlow:0
     };
     world.units.push(u); return u;
   }
@@ -757,8 +771,8 @@
 
   canvas.addEventListener('contextmenu', e=>e.preventDefault(), {passive:false});
 
-  function addClickFx(x,y,color){
-    world.clickFx.push({x,y,color,age:0,life:0.5});
+  function addClickFx(x,y,color,life=0.5){
+    world.clickFx.push({x,y,color,age:0,life});
     while (world.clickFx.length > 12) world.clickFx.shift(); // cap effects
   }
   function pos(e){ const r=canvas.getBoundingClientRect(); return {x:(e.clientX-r.left), y:(e.clientY-r.top)}; }
@@ -850,7 +864,9 @@
     const spawnY = (b.f===F.PLAYER) ? b.y - 10 : b.y + b.h + 12;
     const nu = spawn(spawnX, spawnY, b.f, b.current.kind);
     if(b.f===F.PLAYER){
-      nu.selected=true; world.selection.add(nu); updateSelectionHUD();
+      nu.spawnGlow = SPAWN_GLOW_TIME;
+      addClickFx(spawnX, spawnY, '#4dd0ff', 1.1);
+      showUnitReady(b.current.kind);
     } else if(world.enemyAI){
       world.enemyAI.unassigned.push(nu);
     }
@@ -1064,6 +1080,7 @@
       const speed = Math.hypot(u.vx,u.vy);
       if(speed>0.01){ u.facing = Math.atan2(u.vy,u.vx); u.walk += dt * (4 + speed*4); }
       else { u.walk += dt*2; }
+      if(u.spawnGlow>0){ u.spawnGlow = Math.max(0, u.spawnGlow - dt); }
     }
 
     // Enemy seek
@@ -1373,6 +1390,20 @@
     const s=worldToScreen(u.x,u.y);
     if(s.x<-30||s.y<-30||s.x>VIEW_W+30||s.y>VIEW_H+30) return;
 
+    if(u.spawnGlow>0){
+      const ratio = clamp(u.spawnGlow / SPAWN_GLOW_TIME, 0, 1);
+      ctx.save();
+      ctx.translate(s.x,s.y);
+      const ringRadius = u.r + 10 + (1 - ratio) * 6;
+      ctx.globalAlpha = 0.35 + 0.45 * ratio;
+      ctx.fillStyle = `rgba(77,208,255,${0.12 + 0.18*ratio})`;
+      ctx.beginPath(); ctx.arc(0,0, ringRadius + 4, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle = '#4dd0ff';
+      ctx.lineWidth = 2 + (1 - ratio) * 2;
+      ctx.beginPath(); ctx.arc(0,0, ringRadius, 0, Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
+
     const dir = u.facing;
     ctx.save(); ctx.translate(s.x,s.y); ctx.rotate(dir);
 
@@ -1456,6 +1487,17 @@
     orderFlash.classList.add('show');
     if(orderFlashTimer) clearTimeout(orderFlashTimer);
     orderFlashTimer = setTimeout(()=>orderFlash.classList.remove('show'), 700);
+  }
+  function showUnitReady(kind){
+    if(!unitReadyNotice) return;
+    const pretty = kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : 'Unit';
+    unitReadyNotice.textContent = `Unit ready: ${pretty}`;
+    unitReadyNotice.classList.add('show');
+    if(unitReadyTimer) clearTimeout(unitReadyTimer);
+    unitReadyTimer = setTimeout(()=>{
+      unitReadyNotice.classList.remove('show');
+      unitReadyTimer=null;
+    }, 1800);
   }
 
   // Fog overlay on current viewport

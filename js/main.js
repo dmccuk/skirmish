@@ -109,7 +109,7 @@
     [BUILDING_TYPES.BARRACKS]: {
       w: 70,
       h: 46,
-      hp: 260,
+      hp: 520,
       label: 'Barracks',
       spawnOffset: { x: 0, y: -12 },
       queue: true
@@ -117,7 +117,7 @@
     [BUILDING_TYPES.STRONGHOLD]: {
       w: 110,
       h: 86,
-      hp: 420,
+      hp: 840,
       label: 'Stronghold',
       queue: false
     }
@@ -647,6 +647,7 @@
       max: baseHp,
       hp: overrides.hp ?? baseHp,
       label: overrides.label ?? config.label ?? 'Structure',
+      role: config.role ?? null,
       queue: config.queue ? [] : [],
       current: null,
       timeLeft: 0,
@@ -711,12 +712,23 @@
     const playerBarracks = createBuilding(BUILDING_TYPES.BARRACKS, F.PLAYER, 120, MAP_H-130);
     world.buildings.push(playerBarracks);
 
+    // Player base
+    const playerBase = createBuilding(BUILDING_TYPES.STRONGHOLD, F.PLAYER, 220, MAP_H-320, {
+      label: 'Base',
+      role: 'base',
+      hitRadius: 70,
+      stopRadius: 82
+    });
+    world.buildings.push(playerBase);
+
     // Enemy barracks
     const enemyBarracks = createBuilding(BUILDING_TYPES.BARRACKS, F.ENEMY, 2020, 280);
     world.buildings.push(enemyBarracks);
 
     // Enemy stronghold objective
     const stronghold = createBuilding(BUILDING_TYPES.STRONGHOLD, F.ENEMY, 1880, 620, {
+      label: 'Enemy Base',
+      role: 'base',
       hitRadius: 70,
       stopRadius: 82
     });
@@ -925,6 +937,10 @@
     return world.buildings.find(b => b.f===faction && b.type===BUILDING_TYPES.BARRACKS && b.hp>0);
   }
 
+  function getBaseStructure(faction, includeDestroyed=false){
+    return world.buildings.find(b => b.role==='base' && b.f===faction && (includeDestroyed || b.hp>0));
+  }
+
   function buildingAt(x,y,filt){
     for(const b of world.buildings){
       if(b.hp<=0) continue;
@@ -1091,6 +1107,20 @@
   }
 
   function chooseEnemySearchPoint(origin){
+    const base = getBaseStructure(F.PLAYER);
+    if(base){
+      const cx = base.cx ?? (base.x + base.w/2);
+      const cy = base.cy ?? (base.y + base.h/2);
+      const offsetX = (Math.random()-0.5)*220;
+      const offsetY = (Math.random()-0.5)*220;
+      let destX = clamp(cx + offsetX, 80, MAP_W-80);
+      let destY = clamp(cy + offsetY, MAP_H*0.35, MAP_H-80);
+      if(origin && Math.random()<0.3){
+        destX = clamp(origin.x + (Math.random()-0.5)*260, 80, MAP_W-80);
+        destY = clamp(origin.y + (Math.random()-0.5)*260, MAP_H*0.35, MAP_H-80);
+      }
+      return {x:destX, y:destY};
+    }
     const centroid = playerCentroid();
     let baseX = centroid.x;
     let baseY = Math.max(centroid.y, MAP_H*0.55);
@@ -1117,6 +1147,8 @@
     }
 
     const barracks = getBarracks(F.ENEMY);
+    const playerBase = getBaseStructure(F.PLAYER);
+    const playerBaseInfo = playerBase ? getTargetInfo(playerBase) : null;
     if(barracks && barracks.hp>0){
       ai.buildTimer -= dt;
       if(ai.buildTimer<=0 && barracks.queue.length < 3){
@@ -1169,6 +1201,27 @@
 
       squad.targetUnit = null;
       squad.reassign += dt;
+
+      if(playerBase && playerBaseInfo){
+        const distToBase = Math.hypot(center.x - playerBaseInfo.x, center.y - playerBaseInfo.y);
+        const engageRange = Math.max(playerBaseInfo.stop ?? 0, 110) + 60;
+        if(distToBase <= engageRange){
+          for(const m of squad.members){
+            if(m.target !== playerBase) m.target = playerBase;
+          }
+          squad.waypoint = {x: playerBaseInfo.x, y: playerBaseInfo.y};
+          squad.reassign = 0;
+          continue;
+        }
+
+        const needNewWaypoint = !squad.waypoint || squad.reassign > 6;
+        if(needNewWaypoint){
+          assignFormationMove(squad.members, playerBaseInfo.x, playerBaseInfo.y);
+          squad.waypoint = {x: playerBaseInfo.x, y: playerBaseInfo.y};
+          squad.reassign = 0;
+          continue;
+        }
+      }
 
       if(squad.waypoint){
         const dist = Math.hypot(center.x - squad.waypoint.x, center.y - squad.waypoint.y);
@@ -1393,9 +1446,21 @@
     updateSelectionHUD();
 
     // Win/lose
-    const pAlive = world.units.some(u=>u.f===F.PLAYER) || world.buildings.some(b=>b.f===F.PLAYER && b.hp>0);
-    const eAlive = world.units.some(u=>u.f===F.ENEMY) || world.buildings.some(b=>b.f===F.ENEMY && b.hp>0);
-    if(!pAlive || !eAlive) endGame(pAlive && !eAlive);
+    const playerBaseStruct = getBaseStructure(F.PLAYER, true);
+    const enemyBaseStruct = getBaseStructure(F.ENEMY, true);
+    if(playerBaseStruct && playerBaseStruct.hp<=0){
+      endGame(false, 'player-base');
+      return;
+    }
+    if(enemyBaseStruct && enemyBaseStruct.hp<=0){
+      endGame(true, 'enemy-base');
+      return;
+    }
+    if(!playerBaseStruct || !enemyBaseStruct){
+      const pAlive = world.units.some(u=>u.f===F.PLAYER) || world.buildings.some(b=>b.f===F.PLAYER && b.hp>0);
+      const eAlive = world.units.some(u=>u.f===F.ENEMY) || world.buildings.some(b=>b.f===F.ENEMY && b.hp>0);
+      if(!pAlive || !eAlive) endGame(pAlive && !eAlive, 'elimination');
+    }
   }
 
   function moveToward(u,tx,ty,dt,applySep=false,stopDist=0){
@@ -2135,6 +2200,14 @@
     hudY += 18;
     ctx.fillText(`Structures: ${playerStructs}  |  Enemy Structures: ${enemyStructs}`,10,hudY);
     hudY += 18;
+    const playerBaseStruct = getBaseStructure(F.PLAYER, true);
+    if(playerBaseStruct){
+      const baseText = playerBaseStruct.hp>0
+        ? `${Math.max(0,Math.ceil(playerBaseStruct.hp))}/${playerBaseStruct.max}`
+        : 'Destroyed';
+      ctx.fillText(`Base: ${baseText}`, 10, hudY);
+      hudY += 18;
+    }
     const playerBarracksAny = world.buildings.find(b=>b.type===BUILDING_TYPES.BARRACKS && b.f===F.PLAYER);
     if(playerBarracksAny){
       if(playerBarracksAny.hp>0 && playerBarracksAny.current){
@@ -2153,12 +2226,12 @@
       }
       hudY += 18;
     }
-    const enemyStronghold = world.buildings.find(b=>b.type===BUILDING_TYPES.STRONGHOLD && b.f===F.ENEMY);
-    if(enemyStronghold){
-      const strongholdText = enemyStronghold.hp>0
-        ? `${Math.max(0,Math.ceil(enemyStronghold.hp))}/${enemyStronghold.max}`
+    const enemyBaseStruct = getBaseStructure(F.ENEMY, true);
+    if(enemyBaseStruct){
+      const enemyBaseText = enemyBaseStruct.hp>0
+        ? `${Math.max(0,Math.ceil(enemyBaseStruct.hp))}/${enemyBaseStruct.max}`
         : 'Destroyed';
-      ctx.fillText(`Enemy Stronghold: ${strongholdText}`, 10, hudY);
+      ctx.fillText(`Enemy Base: ${enemyBaseText}`, 10, hudY);
     }
 
     drawMinimap();
@@ -2171,9 +2244,17 @@
     const dt=Math.min(0.033,(now-last)/1000); last=now;
     step(dt); draw(); requestAnimationFrame(loop);
   }
-  function endGame(win){
+  function endGame(win, reason='default'){
     world.ended=true; overlay.style.display='flex';
-    resultEl.textContent = win ? 'Victory — area secured!' : 'Defeat — squad wiped.';
+    let message;
+    if(reason==='enemy-base' && win){
+      message = 'Victory — enemy base destroyed!';
+    } else if(reason==='player-base' && !win){
+      message = 'Defeat — base lost.';
+    } else {
+      message = win ? 'Victory — area secured!' : 'Defeat — squad wiped.';
+    }
+    resultEl.textContent = message;
     const sec=((performance.now()-world.stats.timeStart)/1000).toFixed(1);
     const struct=world.stats.structures;
     statsEl.textContent=`Time: ${sec}s • Lost: ${world.stats.lost} • Kills: ${world.stats.kills} • Structures Lost: ${struct.lost} • Structures Destroyed: ${struct.destroyed}`;

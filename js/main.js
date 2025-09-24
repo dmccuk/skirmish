@@ -66,6 +66,44 @@
 
   // -------- World / Tilemap --------
   const F={PLAYER:1,ENEMY:2};
+  const UNIT_PALETTES = {
+    [F.PLAYER]: {
+      uniformBase: '#2f4a63',
+      uniformShadow: '#1f3246',
+      rifleTop: '#4c8dff',
+      grenTop: '#5b8f3b',
+      rifleAccent: '#93c7ff',
+      grenAccent: '#c8e39a',
+      riflePouch: '#1b2d42',
+      grenPouch: '#384926',
+      strap: '#152436',
+      gloves: '#1c2535',
+      boots: '#1c2535',
+      hatDark: '#1a2b3f',
+      hatLight: '#355278',
+      hatBand: '#5dd6ff',
+      weapon: '#2d3038',
+      weaponLight: '#575d68'
+    },
+    [F.ENEMY]: {
+      uniformBase: '#7a3434',
+      uniformShadow: '#4d1c1c',
+      rifleTop: '#c24d4d',
+      grenTop: '#c2973b',
+      rifleAccent: '#ffb1b1',
+      grenAccent: '#f1d79a',
+      riflePouch: '#431b1b',
+      grenPouch: '#4a3110',
+      strap: '#2d1111',
+      gloves: '#2d1b1b',
+      boots: '#2b1515',
+      hatDark: '#3d1515',
+      hatLight: '#592020',
+      hatBand: '#ff8a66',
+      weapon: '#2d2622',
+      weaponLight: '#63544b'
+    }
+  };
   const BUILDING_TYPES = {BARRACKS:'barracks'};
   const VISION_RADIUS=100; // Fog reveal radius
   const SEP_RADIUS = 18, SEP_FORCE = 65;
@@ -1407,22 +1445,122 @@
     const dir = u.facing;
     ctx.save(); ctx.translate(s.x,s.y); ctx.rotate(dir);
 
-    ctx.fillStyle='rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(2,3,u.r*0.9,u.r*0.6,0,0,Math.PI*2); ctx.fill();
+    const palette = UNIT_PALETTES[u.f] || UNIT_PALETTES[F.PLAYER];
+    const isGrenadier = u.unitType === 'grenadier';
+    const topColor = isGrenadier ? palette.grenTop : palette.rifleTop;
+    const accentColor = isGrenadier ? palette.grenAccent : palette.rifleAccent;
+    const pouchColor = isGrenadier ? palette.grenPouch : palette.riflePouch;
 
-    const swing = Math.sin(u.walk)*3.2, backSwing = -Math.sin(u.walk)*3.2;
-    ctx.strokeStyle = '#1c2535'; ctx.lineWidth=2;
-    ctx.beginPath(); ctx.moveTo(-2,4); ctx.lineTo(-2,4+swing); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo( 2,4); ctx.lineTo( 2,4+backSwing); ctx.stroke();
+    ctx.fillStyle='rgba(0,0,0,.25)';
+    ctx.beginPath(); ctx.ellipse(2,3,u.r*0.9,u.r*0.6,0,0,Math.PI*2); ctx.fill();
 
-    const bodyColor = (u.f===F.PLAYER)?'#4a6b8a':'#8a4a4a';
-    ctx.fillStyle=bodyColor; ctx.fillRect(-3,-2,6,8);
+    const swing = Math.sin(u.walk)*3.2;
+    const backSwing = -swing;
 
-    ctx.fillStyle='#f4c2a1'; ctx.fillRect(-2.2,-6,4.4,3);
-    ctx.fillStyle=(u.f===F.PLAYER)?'#2d4a6b':'#6b2d2d'; ctx.fillRect(-3,-7,6,2);
+    ctx.strokeStyle = palette.boots;
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(-1.6,4.1); ctx.lineTo(-1.6,4.1 + swing); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo( 1.6,4.1); ctx.lineTo( 1.6,4.1 + backSwing); ctx.stroke();
+    ctx.lineCap = 'butt';
 
-    ctx.fillStyle='#303030';
-    if(u.unitType==='grenadier'){ ctx.fillRect(4,-1,6,2); ctx.fillRect(10,-2,2,4); }
-    else { ctx.fillRect(3,-1,7,1.5); ctx.fillRect(10,-2,1.5,3); }
+    ctx.fillStyle = palette.uniformShadow;
+    ctx.beginPath();
+    ctx.moveTo(-3,-2.2); ctx.lineTo(3,-2.2); ctx.lineTo(2.6,3.8); ctx.lineTo(-2.6,3.8);
+    ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle = palette.uniformBase;
+    ctx.beginPath();
+    ctx.moveTo(-2.6,-2); ctx.lineTo(2.6,-2); ctx.lineTo(2.3,3.4); ctx.lineTo(-2.3,3.4);
+    ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle = topColor;
+    ctx.beginPath();
+    ctx.moveTo(-2.6,-2.6); ctx.lineTo(2.6,-2.6); ctx.lineTo(2.2,-0.2); ctx.lineTo(-2.2,-0.2);
+    ctx.closePath(); ctx.fill();
+
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(-2.4,-2.5,4.8,0.6);
+    ctx.fillStyle = accentColor;
+    ctx.fillRect(-2.4,-2,4.8,0.45);
+
+    ctx.strokeStyle = palette.strap;
+    ctx.lineWidth = 1.1;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-2.4,-2.3); ctx.lineTo(1.8,3.2); ctx.stroke();
+    if(isGrenadier){
+      ctx.beginPath(); ctx.moveTo(2.3,-2); ctx.lineTo(-1.6,3.2); ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+
+    ctx.fillStyle = palette.strap;
+    ctx.fillRect(-2.6,1.6,5.2,1.1);
+
+    ctx.fillStyle = pouchColor;
+    if(isGrenadier){
+      ctx.fillRect(-2.1,0.8,4.2,2);
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(-0.7,0.8); ctx.lineTo(-0.7,2.8); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0.9,0.8); ctx.lineTo(0.9,2.8); ctx.stroke();
+    } else {
+      const pouchW = 1.2;
+      ctx.fillRect(-2.6,0.7,pouchW,1.4);
+      ctx.fillRect(-0.6,0.7,pouchW,1.4);
+      ctx.fillRect(1.4,0.7,pouchW,1.4);
+    }
+
+    ctx.strokeStyle = palette.uniformBase;
+    ctx.lineWidth = 2.3;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-2.6,-0.8); ctx.lineTo(-4.6,0.8 + swing*0.2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo( 2.6,-0.8); ctx.lineTo( 4.6,0.8 + backSwing*0.2); ctx.stroke();
+
+    ctx.strokeStyle = palette.gloves;
+    ctx.lineWidth = 2.6;
+    ctx.beginPath(); ctx.moveTo(-4.6,0.8 + swing*0.2); ctx.lineTo(-4.3,1.4 + swing*0.2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo( 4.6,0.8 + backSwing*0.2); ctx.lineTo( 4.3,1.4 + backSwing*0.2); ctx.stroke();
+    ctx.lineCap = 'butt';
+
+    ctx.fillStyle = '#f4cfa6';
+    ctx.beginPath(); ctx.ellipse(0,-5.2,2.1,1.9,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    ctx.beginPath(); ctx.arc(-0.6,-5.1,0.35,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0.6,-5.1,0.35,0,Math.PI*2); ctx.fill();
+    ctx.fillRect(-1.1,-4.5,2.2,0.35);
+
+    const hatGrad = ctx.createLinearGradient(-3,-6.8,3,-4.8);
+    hatGrad.addColorStop(0, palette.hatDark);
+    hatGrad.addColorStop(1, palette.hatLight);
+    ctx.fillStyle = hatGrad;
+    ctx.fillRect(-3,-6.8,6,2.2);
+    ctx.fillStyle = palette.hatBand;
+    ctx.fillRect(-3,-5.55,6,0.5);
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.fillRect(-2.6,-6.6,2.4,0.35);
+    ctx.fillStyle = palette.hatDark;
+    ctx.beginPath(); ctx.ellipse(0,-4.8,3.1,0.6,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = palette.uniformShadow;
+    ctx.fillRect(-2,-3.4,4,0.8);
+
+    ctx.fillStyle = palette.weapon;
+    if(isGrenadier){
+      ctx.fillRect(3.2,-0.8,8,1.6);
+      ctx.fillRect(10.8,-2,2.8,4);
+      ctx.fillRect(4.2,-2.6,1.4,2.4);
+      ctx.fillStyle = palette.weaponLight;
+      ctx.fillRect(3.2,-0.8,8,0.45);
+      ctx.fillStyle = accentColor;
+      ctx.beginPath(); ctx.arc(12.2,0,1.6,0,Math.PI*2); ctx.fill();
+    } else {
+      ctx.fillRect(3.2,-0.7,8.4,1.3);
+      ctx.fillRect(10.4,-1.6,2.8,2.4);
+      ctx.fillRect(4.6,0,2.4,1);
+      ctx.fillStyle = palette.weaponLight;
+      ctx.fillRect(3.2,-0.7,8.4,0.35);
+      ctx.fillStyle = accentColor;
+      ctx.fillRect(4.6,0.1,2.4,0.45);
+    }
 
     if(u.selected){ ctx.strokeStyle='#d7f5ff'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(0,0,u.r+3,0,Math.PI*2); ctx.stroke(); }
     ctx.restore();

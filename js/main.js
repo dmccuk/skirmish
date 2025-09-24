@@ -64,7 +64,7 @@
 
   // -------- World / Tilemap --------
   const F={PLAYER:1,ENEMY:2};
-  const BUILDING_TYPES = {BARRACKS:'barracks'};
+  const BUILDING_TYPES = {BARRACKS:'barracks', HQ:'hq', DEPOT:'depot'};
   const VISION_RADIUS=100; // Fog reveal radius
   const SEP_RADIUS = 18, SEP_FORCE = 65;
 
@@ -95,7 +95,7 @@
   // --- Camera panning state ---
   const PAN_SPEED = 520;
   const PAN_SPEED_FAST = 980;
-  const EDGE_BAND = 40;
+  const EDGE_BAND = 60;
   let keys = new Set();
   let isPanningDrag = false;
   let dragStartScreen = null;
@@ -272,6 +272,8 @@
       selection:new Set(), selBox:null,
       ended:false, stats:{lost:0,kills:0,timeStart:performance.now()},
       resources:{credits:500},
+      enemyAI:{credits:300,incomeTimer:0,buildCooldown:2,unassigned:[],squads:[],groupTimer:5,
+               focus:null,searchRoute:[],searchCursor:0,base:null,baseAlertTime:0},
       clickFx:[]
     };
 
@@ -289,15 +291,62 @@
       hp:260, max:260, queue:[], current:null, timeLeft:0
     });
 
+    // Enemy base layout
+    const enemyHQ = {
+      type:BUILDING_TYPES.HQ, f:F.ENEMY, x:1936, y:220, w:128, h:88,
+      hp:420, max:420, queue:[], current:null, timeLeft:0
+    };
+    const enemyDepot = {
+      type:BUILDING_TYPES.DEPOT, f:F.ENEMY, x:2138, y:334, w:96, h:70,
+      hp:320, max:320, queue:[], current:null, timeLeft:0
+    };
+    const enemyBarracks = {
+      type:BUILDING_TYPES.BARRACKS, f:F.ENEMY, x:2068, y:296, w:74, h:46,
+      hp:260, max:260, queue:[], current:null, timeLeft:0
+    };
+
+    world.buildings.push(enemyHQ, enemyDepot, enemyBarracks);
+
+    world.enemyAI.base = {
+      center:{x:enemyHQ.x+enemyHQ.w/2, y:enemyHQ.y+enemyHQ.h/2},
+      rally:{x:enemyHQ.x+enemyHQ.w/2+60, y:enemyHQ.y+enemyHQ.h+90},
+      patrolPoints:[], alertRadius:360
+    };
+    world.enemyAI.base.patrolPoints = makePatrolRing(world.enemyAI.base.center, 150, 6);
+
+    const playerBarracks = getBarracks(F.PLAYER);
+    if(playerBarracks){
+      const playerCenter = {x:playerBarracks.x+playerBarracks.w/2, y:playerBarracks.y+playerBarracks.h/2};
+      world.enemyAI.searchRoute = buildEnemySearchRoute(world.enemyAI.base.center, playerCenter);
+      world.enemyAI.searchCursor = Math.floor(Math.random()*world.enemyAI.searchRoute.length);
+    }
+
     // Player squad
     for(let i=0;i<6;i++){ const u=spawn(220+(i%3)*22,MAP_H-120+Math.floor(i/3)*26,F.PLAYER,'rifleman'); u.selected=true; world.selection.add(u); }
     for(let i=0;i<2;i++){ const u=spawn(300+(i*22),MAP_H-120,F.PLAYER,'grenadier'); u.selected=true; world.selection.add(u); }
     updateSelectionHUD();
 
     // Enemies
-    for(let i=0;i<8;i++) spawn(1800+(i%4)*26,320+Math.floor(i/4)*26,F.ENEMY,'rifleman');
-    for(let i=0;i<3;i++) spawn(1950+(i*26),420,F.ENEMY,'grenadier');
-    for(let i=0;i<6;i++) spawn(2100+(i%3)*26,900+Math.floor(i/3)*26,F.ENEMY,'rifleman');
+    const enemyAI = world.enemyAI;
+    const baseSpawn = world.enemyAI.base.center;
+    for(let i=0;i<6;i++){
+      enemyAI.unassigned.push(spawn(
+        baseSpawn.x-100+(i%3)*36,
+        baseSpawn.y+90+Math.floor(i/3)*28,
+        F.ENEMY,'rifleman'));
+    }
+    for(let i=0;i<3;i++){
+      enemyAI.unassigned.push(spawn(
+        baseSpawn.x+80+(i*28),
+        baseSpawn.y+36,
+        F.ENEMY,'grenadier'));
+    }
+    for(let i=0;i<4;i++){
+      enemyAI.unassigned.push(spawn(
+        baseSpawn.x-140+(i*36),
+        baseSpawn.y-60,
+        F.ENEMY,'rifleman'));
+    }
 
     // Start camera near base
     centerCamera(260, MAP_H-120);
@@ -529,6 +578,255 @@
     }
   }
 
+  function processBarracks(b, dt){
+    if(!b || b.hp<=0) return;
+    if(!b.current && b.queue.length>0){ startNextInQueue(b); }
+    if(!b.current) return;
+    b.timeLeft -= dt;
+    if(b.timeLeft>0) return;
+    const spawnX = b.x + b.w/2 + (Math.random()-0.5)*20;
+    const spawnY = (b.f===F.PLAYER) ? b.y - 10 : b.y + b.h + 12;
+    const nu = spawn(spawnX, spawnY, b.f, b.current.kind);
+    if(b.f===F.PLAYER){
+      nu.selected=true; world.selection.add(nu); updateSelectionHUD();
+    } else if(world.enemyAI){
+      world.enemyAI.unassigned.push(nu);
+    }
+    b.current=null;
+    b.timeLeft=0;
+    startNextInQueue(b);
+  }
+
+  function playerCentroid(){
+    let sx=0, sy=0, count=0;
+    for(const u of world.units){
+      if(u.f===F.PLAYER && u.hp>0){ sx+=u.x; sy+=u.y; count++; }
+    }
+    if(count===0) return {x:MAP_W*0.35,y:MAP_H*0.75};
+    return {x:sx/count, y:sy/count};
+  }
+
+  function makePatrolRing(center, radius, count){
+    const pts=[];
+    for(let i=0;i<count;i++){
+      const ang = (Math.PI*2*i)/count;
+      const px = clamp(center.x + Math.cos(ang)*radius, 60, MAP_W-60);
+      const py = clamp(center.y + Math.sin(ang)*radius, 60, MAP_H-60);
+      pts.push({x:px, y:py});
+    }
+    return pts;
+  }
+
+  function buildEnemySearchRoute(from, to){
+    const pts=[];
+    const steps=6;
+    for(let i=1;i<=steps;i++){
+      const t=i/(steps+1);
+      const curve=Math.sin(Math.PI*t);
+      const offsetX=(Math.random()-0.5)*260*curve;
+      const offsetY=(Math.random()-0.5)*320*curve;
+      const x=clamp(from.x + (to.x-from.x)*t + offsetX, 60, MAP_W-60);
+      const y=clamp(from.y + (to.y-from.y)*t + offsetY, 100, MAP_H-80);
+      pts.push({x,y});
+    }
+    pts.push({x:clamp(to.x,80,MAP_W-80), y:clamp(to.y-80,120,MAP_H-100)});
+    return pts;
+  }
+
+  function squadCenter(members){
+    let sx=0, sy=0;
+    for(const m of members){ sx+=m.x; sy+=m.y; }
+    return {x:sx/members.length, y:sy/members.length};
+  }
+
+  function findClosestPlayerTarget(center){
+    let best=null, bestDist=Infinity;
+    for(const u of world.units){
+      if(u.f!==F.PLAYER || u.hp<=0) continue;
+      const d = Math.hypot(u.x-center.x, u.y-center.y);
+      if(d < bestDist){ bestDist=d; best=u; }
+    }
+    return best ? {unit:best, distance:bestDist} : null;
+  }
+
+  function updateEnemyAI(dt){
+    const ai = world.enemyAI;
+    if(!ai) return;
+
+    ai.incomeTimer += dt;
+    const INCOME_INTERVAL = 3.5;
+    if(ai.incomeTimer >= INCOME_INTERVAL){
+      ai.credits += 8;
+      ai.incomeTimer -= INCOME_INTERVAL;
+    }
+
+    const barracks = getBarracks(F.ENEMY);
+    if(barracks && barracks.hp>0){
+      if(ai.buildCooldown>0) ai.buildCooldown -= dt;
+      if(ai.buildCooldown<=0 && barracks.queue.length < 4){
+        const roll = Math.random();
+        const preferGrenadier = ai.credits >= 100 && roll > 0.6;
+        const choice = preferGrenadier ? 'grenadier' : 'rifleman';
+        const cost = choice==='rifleman'?50:100;
+        if(ai.credits >= cost){
+          ai.credits -= cost;
+          const baseTime = choice==='rifleman'?3:4;
+          const buildTime = baseTime * 1.4;
+          barracks.queue.push({kind:choice, time:buildTime});
+          if(!barracks.current) startNextInQueue(barracks);
+          ai.buildCooldown = 2.4 + Math.random()*3.4;
+        } else {
+          ai.buildCooldown = 1.2;
+        }
+      }
+    }
+
+    if(ai.base && (!ai.searchRoute || ai.searchRoute.length===0)){
+      const playerB = getBarracks(F.PLAYER);
+      const target = playerB ? {x:playerB.x+playerB.w/2, y:playerB.y+playerB.h/2} : playerCentroid();
+      ai.searchRoute = buildEnemySearchRoute(ai.base.center, target);
+      ai.searchCursor = 0;
+    }
+
+    const DETECT_UNIT = 420;
+    const DETECT_STRUCTURE = 520;
+    let newFocus = null;
+    for(const enemy of world.units){
+      if(enemy.f!==F.ENEMY || enemy.hp<=0) continue;
+      const info = findClosestPlayerTarget({x:enemy.x, y:enemy.y});
+      if(info && info.distance <= DETECT_UNIT){
+        newFocus = {x:info.unit.x, y:info.unit.y, time:world.time};
+        break;
+      }
+    }
+    if(!newFocus){
+      const playerB = getBarracks(F.PLAYER);
+      if(playerB){
+        const center = {x:playerB.x+playerB.w/2, y:playerB.y+playerB.h/2};
+        for(const enemy of world.units){
+          if(enemy.f!==F.ENEMY || enemy.hp<=0) continue;
+          if(Math.hypot(enemy.x-center.x, enemy.y-center.y) <= DETECT_STRUCTURE){
+            newFocus = {x:center.x, y:center.y, time:world.time};
+            break;
+          }
+        }
+      }
+    }
+    if(newFocus) ai.focus = newFocus;
+    else if(ai.focus && world.time - ai.focus.time > 18) ai.focus = null;
+
+    if(ai.base){
+      const baseCenter = ai.base.center;
+      const threatened = world.units.some(u => u.f===F.PLAYER && u.hp>0 && Math.hypot(u.x-baseCenter.x, u.y-baseCenter.y) <= ai.base.alertRadius);
+      if(threatened) ai.baseAlertTime = world.time;
+      if(ai.baseAlertTime && world.time - ai.baseAlertTime > 12) ai.baseAlertTime = 0;
+    }
+
+    ai.unassigned = ai.unassigned.filter(u => u.hp>0);
+    for(const u of ai.unassigned){ u.squad = null; }
+    ai.groupTimer += dt;
+
+    for(let i=ai.squads.length-1;i>=0;i--){
+      const squad = ai.squads[i];
+      squad.members = squad.members.filter(u => u.hp>0);
+      if(squad.members.length===0){ ai.squads.splice(i,1); continue; }
+      for(const m of squad.members){ m.squad = squad; }
+      if(squad.members.length<2){
+        for(const m of squad.members){ m.target=null; m.squad=null; ai.unassigned.push(m); }
+        ai.squads.splice(i,1);
+      }
+    }
+
+    const defendersCount = ai.squads.filter(s => s.role==='defend').length;
+    if(ai.unassigned.length >= 2 && ai.groupTimer >= 3){
+      const maxSize = Math.min(5, ai.unassigned.length);
+      const size = Math.floor(Math.random() * (maxSize - 1)) + 2;
+      const members = ai.unassigned.splice(0, size);
+      const role = (defendersCount===0) ? 'defend' : 'hunt';
+      const patrolLen = ai.base && ai.base.patrolPoints.length ? ai.base.patrolPoints.length : 1;
+      const routeLen = (ai.searchRoute && ai.searchRoute.length) ? ai.searchRoute.length : 1;
+      const startIndex = routeLen ? (ai.searchCursor % routeLen) : 0;
+      const squad = {members, role, waypoint:null, targetUnit:null, orderLabel:'', searchIndex:startIndex, patrolIndex:Math.floor(Math.random()*patrolLen)};
+      ai.searchCursor = (ai.searchCursor + 1) % routeLen;
+      for(const m of members){ m.squad = squad; m.target=null; }
+      if(role==='defend' && ai.base){
+        const dest = ai.base.patrolPoints[squad.patrolIndex % patrolLen] || ai.base.center;
+        orderSquadTo(squad, dest, 'patrol');
+      } else {
+        if(ai.focus){
+          orderSquadTo(squad, ai.focus, 'investigate');
+        } else if(ai.searchRoute && ai.searchRoute.length){
+          const dest = ai.searchRoute[squad.searchIndex % ai.searchRoute.length];
+          orderSquadTo(squad, dest, 'search');
+          squad.searchIndex = (squad.searchIndex + 1) % ai.searchRoute.length;
+        }
+      }
+      ai.squads.push(squad);
+      ai.groupTimer = 0;
+    }
+
+    const hasFreshFocus = ai.focus && world.time - ai.focus.time < 18;
+    for(const squad of ai.squads){
+      if(!squad.members || squad.members.length===0) continue;
+      const center = squadCenter(squad.members);
+      let targetInfo = findClosestPlayerTarget(center);
+      const targetRange = squad.role==='defend' ? 520 : 420;
+      if(targetInfo && targetInfo.distance <= targetRange){
+        squad.targetUnit = targetInfo.unit;
+      } else if(squad.targetUnit && squad.targetUnit.hp>0){
+        targetInfo = {unit:squad.targetUnit};
+      } else {
+        squad.targetUnit = null;
+      }
+
+      if(squad.targetUnit){
+        for(const m of squad.members){ if(m.target !== squad.targetUnit) m.target = squad.targetUnit; }
+        continue;
+      }
+
+      if(squad.members.some(m => !m.target) && squad.waypoint){
+        assignFormationMove(squad.members, squad.waypoint.x, squad.waypoint.y);
+      }
+
+      if(squad.role==='defend' && ai.base){
+        const underAlert = ai.baseAlertTime && world.time - ai.baseAlertTime < 8;
+        if(underAlert){
+          if(!squad.waypoint || squad.orderLabel!=='respond'){
+            orderSquadTo(squad, ai.base.center, 'respond');
+          }
+        } else {
+          const patrolLen = ai.base.patrolPoints.length || 1;
+          if(!squad.waypoint || squad.orderLabel!=='patrol'){
+            const dest = ai.base.patrolPoints[squad.patrolIndex % patrolLen] || ai.base.center;
+            orderSquadTo(squad, dest, 'patrol');
+            squad.patrolIndex = (squad.patrolIndex + 1) % patrolLen;
+          } else {
+            const dist = Math.hypot(center.x - squad.waypoint.x, center.y - squad.waypoint.y);
+            if(dist < 70){
+              const dest = ai.base.patrolPoints[squad.patrolIndex % patrolLen] || ai.base.center;
+              orderSquadTo(squad, dest, 'patrol');
+              squad.patrolIndex = (squad.patrolIndex + 1) % patrolLen;
+            }
+          }
+        }
+        continue;
+      }
+
+      if(hasFreshFocus){
+        if(!squad.waypoint || squad.orderLabel!=='investigate'){
+          orderSquadTo(squad, ai.focus, 'investigate');
+        }
+      } else if(ai.searchRoute && ai.searchRoute.length){
+        const dist = Math.hypot(center.x - (squad.waypoint?.x||center.x), center.y - (squad.waypoint?.y||center.y));
+        if(!squad.waypoint || squad.orderLabel!=='search' || dist < 80){
+          const dest = ai.searchRoute[squad.searchIndex % ai.searchRoute.length];
+          orderSquadTo(squad, dest, 'search');
+          squad.searchIndex = (squad.searchIndex + 1) % ai.searchRoute.length;
+        }
+      }
+    }
+  }
+
   // --- Formation assignment ---
   function assignFormationMove(units, tx, ty){
     if(units.length===0) return;
@@ -547,6 +845,15 @@
       }
     }
     i=0; for(const u of units){ const off = offsets[i++] || {x:0,y:0}; u.target = { x: tx + off.x, y: ty + off.y, dummy:true, formation:true }; }
+  }
+
+  function orderSquadTo(squad, dest, label){
+    if(!squad || !dest) return;
+    assignFormationMove(squad.members, dest.x, dest.y);
+    squad.waypoint = {x:dest.x, y:dest.y};
+    squad.targetUnit = null;
+    squad.orderLabel = label || '';
+    squad.orderIssued = world.time;
   }
 
   // --- Separation steering ---
@@ -608,6 +915,8 @@
 
     if(world.tAccum>=2){ world.resources.credits+=10; world.tAccum=0; }
 
+    updateEnemyAI(dt);
+
     // Cooldowns + walk anim + reveal
     for(const u of world.units){
       if(u.cd>0) u.cd-=dt;
@@ -620,12 +929,25 @@
     // Enemy seek
     for(const u of world.units){
       if(u.f!==F.ENEMY || u.hp<=0) continue;
+      if(u.squad){
+        const squadTarget = u.squad.targetUnit;
+        if(squadTarget && squadTarget.hp>0 && u.target !== squadTarget){
+          u.target = squadTarget;
+        }
+        continue;
+      }
       if(!u.target || (u.target.hp!==undefined && u.target.hp<=0)){
         let best=null,bd2=Infinity;
         for(const p of world.units){ if(p.f!==F.PLAYER||p.hp<=0) continue;
           const d2=(p.x-u.x)**2+(p.y-u.y)**2;
           if(d2<bd2 && Math.sqrt(d2)<190 && !rifleBlocked(u.x,u.y,p.x,p.y)){ bd2=d2; best=p; } }
-        if(best) u.target=best; else { u.wander += (Math.random()-0.5)*0.2; u.x += Math.cos(u.wander)*0.6*60*dt; u.y += Math.sin(u.wander)*0.6*60*dt; }
+        if(best){
+          u.target=best;
+        } else {
+          u.wander += (Math.random()-0.5)*0.2;
+          u.x += Math.cos(u.wander)*0.6*60*dt;
+          u.y += Math.sin(u.wander)*0.6*60*dt;
+        }
       }
     }
 
@@ -693,19 +1015,8 @@
     if(world.explosions){ for(let i=world.explosions.length-1;i>=0;i--){ const e=world.explosions[i]; e.life-=dt; if(e.life<=0) world.explosions.splice(i,1); } }
 
     // Barracks production
-    const b = getBarracks(F.PLAYER);
-    if(b && b.hp>0){
-      if(!b.current && b.queue.length>0){ startNextInQueue(b); }
-      if(b.current){
-        b.timeLeft -= dt;
-        if(b.timeLeft<=0){
-          const spawnX=b.x+b.w/2+(Math.random()-0.5)*20, spawnY=b.y-10;
-          const nu=spawn(spawnX,spawnY,b.f,b.current.kind);
-          nu.selected=true; world.selection.add(nu); updateSelectionHUD();
-          b.current=null; b.timeLeft=0; startNextInQueue(b);
-        }
-      }
-    }
+    processBarracks(getBarracks(F.PLAYER), dt);
+    processBarracks(getBarracks(F.ENEMY), dt);
 
     // Click FX progress
     for(let i=world.clickFx.length-1;i>=0;i--){
@@ -817,33 +1128,85 @@
     }
   }
 
-  function drawBarracks(b){
-    const isPlayer = b.f===F.PLAYER;
+  function drawBuilding(b){
     const s=worldToScreen(b.x,b.y);
     const x=s.x, y=s.y, w=b.w, h=b.h;
     if(x<-w||y<-h||x>VIEW_W||y>VIEW_H) return;
 
-    ctx.fillStyle='rgba(0,0,0,.35)'; ctx.fillRect(x+3,y+3,w,h);
-    ctx.fillStyle = isPlayer ? '#4a8bd3' : '#d34a4a';
-    roundRect(x,y,w,h,6,true,false);
-    ctx.fillStyle = isPlayer ? '#2d4a6b' : '#6b2d2d';
-    roundRect(x+4,y+4,w-8,14,4,true,false);
-    ctx.fillStyle = 'rgba(255,255,255,.15)'; ctx.fillRect(x+8,y+6,12,3); ctx.fillRect(x+w-20,y+6,12,3);
-    ctx.fillStyle = '#0e121d'; ctx.fillRect(x+w/2-6,y+h-16,12,16);
-    ctx.fillStyle = isPlayer ? '#3bd1ff' : '#ff6666';
-    ctx.fillRect(x+6,y-8,2,8); ctx.beginPath(); ctx.moveTo(x+8,y-8); ctx.lineTo(x+22,y-3); ctx.lineTo(x+8,y+2); ctx.closePath(); ctx.fill();
+    ctx.save();
 
-    ctx.fillStyle='#0e121d'; ctx.fillRect(x,y-10,w,4);
-    ctx.fillStyle='#36d399'; ctx.fillRect(x,y-10,w*(b.hp/b.max),4);
+    ctx.fillStyle='rgba(0,0,0,.35)';
+    ctx.fillRect(x+3,y+3,w,h);
 
-    if(b.current){
-      const total = b.current.time; const prog = Math.max(0,1 - b.timeLeft/total);
-      ctx.fillStyle='#36d399'; ctx.fillRect(x,y-16,w*prog,4);
+    if(b.type===BUILDING_TYPES.HQ){
+      ctx.fillStyle='#b33f3f';
+      roundRect(x,y,w,h,10,true,false);
+      ctx.fillStyle='#5b1f1f';
+      roundRect(x+8,y+8,w-16,h-26,8,true,false);
+      ctx.fillStyle='#2b1111';
+      roundRect(x+18,y+18,w-36,h-52,6,true,false);
+      ctx.fillStyle='#ffd27f';
+      ctx.fillRect(x+w/2-18,y+14,36,7);
+      ctx.fillRect(x+w/2-12,y+26,24,6);
+      ctx.fillStyle='rgba(245,226,188,0.8)';
+      ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(x+18,y+18,10,Math.PI*0.2,Math.PI*1.4); ctx.stroke();
+      ctx.fillRect(x+17,y+10,2,8);
+      ctx.fillStyle='#ff6666';
+      ctx.fillRect(x+w-16,y-12,3,12);
+      ctx.beginPath(); ctx.moveTo(x+w-13,y-11); ctx.lineTo(x+w-1,y-6); ctx.lineTo(x+w-13,y-1); ctx.closePath(); ctx.fill();
+    } else if(b.type===BUILDING_TYPES.DEPOT){
+      ctx.fillStyle='#a96736';
+      roundRect(x,y,w,h,8,true,false);
+      ctx.fillStyle='#5a3018';
+      roundRect(x+6,y+10,w-12,h-24,6,true,false);
+      ctx.fillStyle='#d9b066';
+      const stripes=4;
+      for(let i=0;i<=stripes;i++){
+        const sx = x+8 + (w-16)*(i/stripes);
+        ctx.fillRect(sx,y+12,2,h-28);
+      }
+      ctx.fillStyle='#3a1c0d';
+      ctx.fillRect(x+4,y+h-16,w-8,12);
+      ctx.fillStyle='#ffb347';
+      ctx.fillRect(x+8,y+h-22,w-16,6);
+    } else {
+      const isPlayer = b.f===F.PLAYER;
+      ctx.fillStyle = isPlayer ? '#4a8bd3' : '#d34a4a';
+      roundRect(x,y,w,h,6,true,false);
+      ctx.fillStyle = isPlayer ? '#2d4a6b' : '#6b2d2d';
+      roundRect(x+4,y+4,w-8,14,4,true,false);
+      ctx.fillStyle = 'rgba(255,255,255,.15)';
+      ctx.fillRect(x+8,y+6,12,3); ctx.fillRect(x+w-20,y+6,12,3);
+      ctx.fillStyle = '#0e121d';
+      ctx.fillRect(x+w/2-6,y+h-16,12,16);
+      ctx.fillStyle = isPlayer ? '#3bd1ff' : '#ff6666';
+      ctx.fillRect(x+6,y-8,2,8);
+      ctx.beginPath();
+      ctx.moveTo(x+8,y-8);
+      ctx.lineTo(x+22,y-3);
+      ctx.lineTo(x+8,y+2);
+      ctx.closePath();
+      ctx.fill();
     }
-    if(b.queue.length>0){
+
+    ctx.fillStyle='#0e121d';
+    ctx.fillRect(x,y-10,w,4);
+    ctx.fillStyle='#36d399';
+    ctx.fillRect(x,y-10,w*(b.hp/b.max),4);
+
+    if(b.type===BUILDING_TYPES.BARRACKS && b.current){
+      const total = b.current.time;
+      const prog = Math.max(0,1 - b.timeLeft/total);
+      ctx.fillStyle='#36d399';
+      ctx.fillRect(x,y-16,w*prog,4);
+    }
+    if(b.type===BUILDING_TYPES.BARRACKS && b.queue.length>0){
       ctx.fillStyle='#ffffff'; ctx.font='12px system-ui';
       ctx.fillText(`Queue: ${b.queue.length}`, x, y-20);
     }
+
+    ctx.restore();
   }
 
   function roundRect(x,y,w,h,r,fill,stroke){
@@ -855,7 +1218,7 @@
     if(fill) ctx.fill(); if(stroke) ctx.stroke();
   }
 
-  function drawBuildings(){ for(const b of world.buildings){ drawBarracks(b); } }
+  function drawBuildings(){ for(const b of world.buildings){ drawBuilding(b); } }
 
   // Animated soldier
   function drawSoldier(u){

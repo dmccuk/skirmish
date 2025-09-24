@@ -30,6 +30,9 @@ html,body{height:100%;margin:0;background:#0b0e16;color:#e6e8ef;font-family:syst
     .hpbar>span{display:block;height:100%;background:#36d399}
     #orderFlash{margin-top:6px;font-size:11px;color:#cfe8ff;opacity:0;transition:opacity .25s ease}
     #orderFlash.show{opacity:1}
+    #unitReadyNotice{margin-top:6px;font-size:11px;color:#f5d590;opacity:0;transform:translateY(4px);
+        transition:opacity .25s ease,transform .25s ease}
+    #unitReadyNotice.show{opacity:1;transform:translateY(0)}
 
     /* Minimap */
     #minimapWrap{
